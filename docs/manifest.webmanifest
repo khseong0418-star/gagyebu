@@ -1,0 +1,33 @@
+{
+  "name": "가계부",
+  "short_name": "가계부",
+  "description": "인터넷 없이도 동작하는 개인 가계부. 데이터는 휴대폰에만 저장됩니다.",
+  "lang": "ko",
+  "id": "./",
+  "start_url": "./?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f2f2ef",
+  "theme_color": "#f2f2ef",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "지출 기록하기",
+      "short_name": "지출 기록",
+      "url": "./?add=expense",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "수입 기록하기",
+      "short_name": "수입 기록",
+      "url": "./?add=income",
+      "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
