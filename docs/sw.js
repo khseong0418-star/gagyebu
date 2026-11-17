@@ -1,5 +1,5 @@
 // 오프라인 캐시. 앱 파일을 바꾸면 CACHE 버전을 올려 주세요.
-const CACHE = 'gagyebu-v1.1.0';
+const CACHE = 'gagyebu-v1.2.0';
 const ASSETS = [
   './',
   './index.html',

@@ -1,3 +1,9 @@
 plugins {
     id 'com.android.application' version '8.5.2' apply false
 }
+
+// OneDrive 동기화가 빌드 중인 파일을 잠그지 않도록 빌드 결과물은 OneDrive 밖에 둡니다.
+// APK 위치: %USERPROFILE%\android-dev\build\gagyebu\app\outputs\apk\release\app-release.apk
+allprojects {
+    layout.buildDirectory.set(new File(System.getProperty('user.home'), "android-dev/build/gagyebu/${project.name}"))
+}

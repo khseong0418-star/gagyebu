@@ -55,10 +55,25 @@ const cases = [
     want: { type: 'expense', amount: 15000, currency: 'KRW', merchant: '카카오T 택시', cat: 'transport' } },
   { app: 'KB국민카드', title: 'KB국민카드', text: 'KB국민카드1234 해외승인 홍*동 USD 12.50 11/17 12:34 AMAZON',
     want: { type: 'expense', amount: 12.5, currency: 'USD', merchant: 'AMAZON', cat: 'shopping' } },
+  // ---- 환불·결제취소: 지출에서 빼는 항목 (카테고리는 원래 지출처럼 추정) ----
   { app: 'KB국민카드', title: 'KB국민카드', text: 'KB국민카드1234 승인취소 홍*동 12,000원 11/17 12:34 스타벅스',
-    want: { type: 'income', amount: 12000, currency: 'KRW', merchant: '스타벅스', cat: 'refund' } },
+    want: { type: 'income', refund: true, amount: 12000, currency: 'KRW', merchant: '스타벅스', cat: 'cafe' } },
+  { app: '메시지', title: '15447200', text: '[Web발신] 신한카드(1234)취소승인 홍*동 32,500원 11/17 19:40 교촌치킨',
+    want: { type: 'income', refund: true, amount: 32500, currency: 'KRW', merchant: '교촌치킨', cat: 'food' } },
+  { app: '토스', title: '토스뱅크', text: '스타벅스 강남점 결제가 취소됐어요 6,500원',
+    want: { type: 'income', refund: true, amount: 6500, currency: 'KRW', merchant: '스타벅스 강남점', cat: 'cafe' } },
+  { app: 'Citi Mobile', title: 'Citi Alerts', text: 'Refund of SGD 12.50 from SHOPEE has been credited to your Citi card ending 9999.',
+    want: { type: 'income', refund: true, amount: 12.5, currency: 'SGD', merchant: 'SHOPEE', cat: 'shopping' } },
+  { app: 'OCBC', title: 'Transaction reversed', text: 'Your transaction of SGD 45.00 at NETFLIX.COM has been reversed.',
+    want: { type: 'income', refund: true, amount: 45, currency: 'SGD', merchant: 'NETFLIX.COM', cat: 'leisure' } },
+  { app: 'Grab', title: 'Order cancelled', text: 'Your GrabFood order from Hawker Chan was cancelled. S$8.90 has been refunded to your GrabPay Wallet.',
+    want: { type: 'income', refund: true, amount: 8.9, currency: 'SGD', merchant: 'Hawker Chan', cat: 'food' } },
+  // 취소 '수수료'는 환불이 아니라 지출
+  { app: 'Grab', title: 'Booking cancelled', text: 'A cancellation fee of S$4.00 has been charged to your card ending 1234.',
+    want: { type: 'expense', refund: false, amount: 4, currency: 'SGD' } },
+  // 단순 입금은 환불 아님 (앱에서 기록 안 함)
   { app: '카카오뱅크', title: '입금', text: '[입금] 1,000,000원 홍길동 잔액 2,345,678원',
-    want: { type: 'income', amount: 1000000, currency: 'KRW' } },
+    want: { type: 'income', refund: false, amount: 1000000, currency: 'KRW' } },
   // ---- 기록하면 안 되는 알림 ----
   { app: 'OCBC', title: 'OCBC OTP', text: 'Your OTP for transaction of SGD 25.00 at SHOPEE is 123456. Do not share it with anyone.', want: null },
   { app: 'UOB', title: 'UOB', text: 'Your card transaction of SGD 30.00 at XYZ PTE LTD was declined.', want: null },
@@ -78,12 +93,15 @@ for (const c of cases) {
   } else {
     const w = c.want;
     if (p.type !== w.type) errs.push(`type ${p.type} ≠ ${w.type}`);
+    if ('refund' in w && p.refund !== w.refund) errs.push(`refund ${p.refund} ≠ ${w.refund}`);
     if (p.amount !== w.amount) errs.push(`amount ${p.amount} ≠ ${w.amount}`);
     if ('currency' in w && p.currency !== w.currency) errs.push(`currency ${p.currency} ≠ ${w.currency}`);
     if (w.merchant && p.merchant !== w.merchant) errs.push(`merchant "${p.merchant}" ≠ "${w.merchant}"`);
     if (w.alt && !p.amounts.some(a => a.currency === w.alt.currency && a.amount === w.alt.amount)) errs.push(`대체 금액 ${w.alt.currency} ${w.alt.amount} 없음`);
     if (w.cat) {
-      const cat = N.guessCategory(p.merchant, p.type, [], p.type === 'income' ? INC : EXP, `${c.title} ${c.text}`);
+      // 환불은 원래 지출과 같은 카테고리로 추정
+      const asExpense = p.type === 'expense' || p.refund;
+      const cat = N.guessCategory(p.merchant, asExpense ? 'expense' : 'income', [], asExpense ? EXP : INC, `${c.title} ${c.text}`);
       if (cat !== w.cat) errs.push(`cat ${cat} ≠ ${w.cat}`);
     }
   }

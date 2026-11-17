@@ -37,10 +37,14 @@
   /* ---------- 키워드 ---------- */
   const IGNORE = /(\botp\b|one[- ]?time|verification code|인증\s?번호|비밀번호|결제\s?예정|청구\s?(금액|예정)|statement|minimum payment|payment due|due date|reminder|declined|unsuccessful|failed|거절|실패|한도\s?초과|이벤트|혜택|쿠폰|coupon|promo|% off|\boffer\b)/i;
   const INCOME = /(received|credited|incoming|refund|reversal|cashback received|환불|입금|승인\s?취소|결제\s?취소|취소\s?승인|매출\s?취소)/i;
+  // 환불·결제취소: 이전 지출을 되돌리는 알림 (단순 입금과 구분)
+  const REFUND = /(refund|reversal|reversed|cancell?ed|cancellation|\bvoid(ed)?\b|환불|(?:승인|결제|구매|주문|거래|매출)[가이]?\s?취소|취소\s?(?:승인|완료|처리))/i;
+  // 취소 '수수료'는 환불이 아니라 지출
+  const NOT_REFUND = /(cancell?ation fee|cancel fee|no[- ]show fee|취소\s?수수료|위약금)/i;
   const EXPENSE = /(spent|paid|payment|purchase|transaction|\btxn\b|charged|debited|\bdebit\b|was used|used at|card ending|you sent|sent \S+ to|transferred|transfer of|paynow|승인|결제|사용|출금|이체|일시불|할부|체크카드|신용카드)/i;
 
   /* ---------- 가맹점 ---------- */
-  const STOP_EN = '(?=\\s+(?:on|using|with|via|if|for|ref|from|at|is|was)\\b|\\s+\\d{1,2}[\\/\\-.]\\d{1,2}|\\s*\\(|[.;,]\\s|[.;,]?\\s*$|\\s+-\\s|\\s*\\|)';
+  const STOP_EN = '(?=\\s+(?:on|using|with|via|if|for|ref|from|at|is|was|has|have|been|will)\\b|\\s+\\d{1,2}[\\/\\-.]\\d{1,2}|\\s*\\(|[.;,]\\s|[.;,]?\\s*$|\\s+-\\s|\\s*\\|)';
   const STOP_KO = '(?=\\s*(?:누적|잔액|잔고|사용가능)|\\s+(?:일시|금액|카드)\\s*[:：]|\\s+[^\\s:：]+\\s*[:：]|$)';
   const MERCHANT_PATTERNS = [
     // 가맹점: 스타벅스 / Merchant: GRAB
@@ -57,6 +61,8 @@
     /((?:[^\s\d,.|\]]+\s)?[^\s\d,.|\]]+)에서\s*(?:[\d,.]+\s*원|결제|사용|승인)/g,
     // 결제 | 스타벅스
     /(?:결제|승인|사용)\s*[|·]\s*([^\n|]+)/g,
+    // 스타벅스 결제가 취소됐어요
+    /(?:^|\]\s*)([^\d\s[\]][^\n]{0,24}?)\s+(?:결제|승인|구매|주문|거래)[가이]?\s?취소/g,
   ];
   const GENERIC_TITLE = /(payment|transaction|alert|notification|successful|success|approved|card|bank|결제|승인|알림|입금|출금|카드|은행|뱅크|이체|완료|web발신|문자)/i;
 
@@ -91,7 +97,8 @@
   /**
    * 알림 하나를 분석합니다.
    * @param {{title?:string,text?:string}} n
-   * @returns {{ok:true,type:'expense'|'income',amount:number,currency:string|null,amounts:Array,merchant:string}|{ok:false,reason:string}}
+   * @returns {{ok:true,type:'expense'|'income',refund:boolean,amount:number,currency:string|null,amounts:Array,merchant:string}|{ok:false,reason:string}}
+   *   refund=true: 환불·결제취소 (type은 'income'), refund=false & type='income': 단순 입금
    */
   function parse(n) {
     const title = String((n && n.title) || '').replace(/\s+/g, ' ').trim();
@@ -101,11 +108,13 @@
     if (IGNORE.test(text)) return { ok: false, reason: '결제 내역이 아닌 알림 (인증·안내·실패 등)' };
     const amounts = findAmounts(text);
     if (!amounts.length) return { ok: false, reason: '금액을 찾지 못함' };
-    const income = INCOME.test(text);
+    const refund = REFUND.test(text) && !NOT_REFUND.test(text);
+    const income = refund || (INCOME.test(text) && !NOT_REFUND.test(text));
     if (!income && !EXPENSE.test(text)) return { ok: false, reason: '결제·입금 관련 단어가 없음' };
     return {
       ok: true,
       type: income ? 'income' : 'expense',
+      refund,
       amount: amounts[0].amount,
       currency: amounts[0].currency,
       amounts,

@@ -161,10 +161,6 @@ svg:not(.chart) { width: 24px; height: 24px; fill: none; stroke: currentColor; s
 .sum-row { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; color: var(--ink-2); }
 .sum-row b { color: var(--ink); margin-left: 4px; font-variant-numeric: tabular-nums; }
 .sum-row b.inc-ink { color: var(--income-ink); }
-.budget { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
-.budget-top { display: flex; justify-content: space-between; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
-.budget-top .over { color: var(--danger-ink); font-weight: 700; }
-.budget-sub { font-size: 12.5px; color: var(--ink-2); margin-top: 6px; }
 .bar { height: 8px; border-radius: 999px; background: var(--track); overflow: hidden; }
 .bar i { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
 .bar i.over { background: var(--danger); }
@@ -275,8 +271,6 @@ svg:not(.chart) { width: 24px; height: 24px; fill: none; stroke: currentColor; s
 .cat-line b { font-variant-numeric: tabular-nums; }
 .bar.thin { height: 6px; margin-top: 7px; }
 .bar.thin i { background: var(--series); }
-.cat-budget { display: block; font-size: 12px; color: var(--ink-2); margin-top: 5px; }
-.cat-budget.over { color: var(--danger-ink); font-weight: 700; }
 .card-title { font-size: 14px; font-weight: 700; color: var(--ink-2); padding: 14px 16px 2px; margin: 0; }
 
 /* 설정 */
