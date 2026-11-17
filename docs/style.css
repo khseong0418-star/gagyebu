@@ -474,3 +474,5 @@ textarea.input.area { height: auto; min-height: 120px; padding: 12px 14px; resiz
 .date-row .input.time { flex: 0 0 142px; padding: 0 10px; }
 .chips.quick { margin-top: 8px; }
 .rate-status { margin: 4px 4px 10px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.steps code, .hint code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--card-2); padding: 1px 6px; border-radius: 6px; word-break: break-all; }
+.steps small { font-size: 12.5px; }

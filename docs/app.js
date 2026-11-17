@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const STORE_KEY = 'gagyebu.v1';
 /** 안드로이드 앱(APK) 안에서 실행될 때만 존재하는 네이티브 연결 */
 const NATIVE = window.GagyebuNative || null;
@@ -601,13 +601,13 @@ function viewSettings() {
       ${setRow('inbox', '📥', '확인 필요한 알림', `${S.inbox.length}건`)}
       ${setRow('notifLog', '📜', '인식 기록', `${S.notifLog.length}건`)}
       ${setRow('notifTest', '🧪', '알림 문구 테스트')}
-      ${setRow('appUpdate', '⬇️', '앱 업데이트 받기', `v${APP_VERSION}`)}
+      ${setRow('appUpdate', '⬆️', '앱 업데이트 방법', `v${APP_VERSION}`)}
     </div><p class="hint">은행·카드·결제 앱의 알림과 문자에서 금액·가맹점을 읽어 자동으로 기록해요. 카테고리는 같은 가맹점의 이전 기록을 따라가요. 알림 내용은 이 폰 밖으로 나가지 않아요.</p></section>`;
   } else {
     notif = `<section><h3 class="sec-title">결제 알림 자동 기록</h3><div class="card list">
-      <a class="row" href="gagyebu.apk" download><span class="row-icon">📲</span><span class="grow">안드로이드 앱 받기 (APK)</span>${ICON.chev}</a>
+      ${setRow('appUpdate', '📲', '안드로이드 앱 설치 방법')}
       ${setRow('notifTest', '🧪', '알림 문구 테스트')}
-    </div><p class="hint">웹앱은 다른 앱의 알림을 읽을 수 없어서 이 기능은 안드로이드 앱에서만 동작해요. 앱을 설치한 뒤 여기서 <b>백업 파일 저장</b> → 앱에서 <b>백업에서 복원</b>으로 기록을 옮기세요.</p></section>`;
+    </div><p class="hint">웹앱은 다른 앱의 알림을 읽을 수 없어서 이 기능은 안드로이드 앱에서만 동작해요. 싱가포르에서는 PC에 USB로 연결해 설치해야 해요. 설치한 뒤 여기서 <b>백업 파일 저장</b> → 앱에서 <b>백업에서 복원</b>으로 기록을 옮기세요.</p></section>`;
   }
   if (!isStandalone() && !NATIVE) {
     install = deferredInstall
@@ -1593,6 +1593,48 @@ function openNotifTest() {
   });
 }
 
+/* ---------- 앱 설치·업데이트 안내 ---------- */
+// 싱가포르에서는 구글 정책(개발자 인증·Play 프로텍트)으로 폰에서 받은 APK 설치가 막혀 PC에서 USB로 설치
+const cmpVer = (a, b) => {
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+};
+/** 공개 사이트의 최신 버전 번호 확인 (내 GitHub Pages 주소만 요청) */
+async function checkLatest(el) {
+  try {
+    const res = await fetch(APK_URL.replace('gagyebu.apk', 'app.js'), { cache: 'no-store' });
+    const m = (await res.text()).match(/APP_VERSION = '([\d.]+)'/);
+    if (!m) throw new Error('no version');
+    const latest = m[1];
+    el.innerHTML = cmpVer(latest, APP_VERSION) > 0
+      ? `<b>새 버전 v${esc(latest)}이 있어요.</b> 아래 방법으로 업데이트하세요.`
+      : `최신 버전이에요 (공개 버전 v${esc(latest)})`;
+  } catch (e) {
+    el.textContent = '최신 버전을 확인하지 못했어요 (인터넷 연결 확인)';
+  }
+}
+function openUpdateGuide() {
+  const native = !!NATIVE;
+  openSheet({
+    title: native ? '앱 업데이트' : '안드로이드 앱 설치',
+    body: `${native ? `<p class="confirm-msg">사용 중인 버전 <b>v${APP_VERSION}</b><br><span id="up-latest" class="muted">최신 버전 확인 중…</span></p>` : ''}
+      <p class="note">싱가포르에서는 구글 정책 때문에 폰에서 직접 내려받은 APK 설치가 막혀요. <b>PC에 USB로 연결해서 설치</b>해 주세요.${native ? ' 같은 서명이라 덮어쓰기 설치되고 기록은 그대로 남아요.' : ''}</p>
+      <ol class="steps">
+        <li>폰: 설정 → 개발자 옵션 → <b>USB 디버깅</b> 켜기<br><small class="muted">개발자 옵션이 없으면 휴대전화 정보 → 소프트웨어 정보 → 빌드번호를 7번 누르기</small></li>
+        <li>폰: 설정 → 보안 및 개인정보 보호 → <b>자동 차단</b>이 켜져 있으면 잠시 끄기</li>
+        <li>USB 케이블로 PC에 연결 → 폰에 뜨는 <b>USB 디버깅 허용</b> 누르기</li>
+        <li>PC에서 APK를 받아 설치: <code>adb install -r gagyebu.apk</code></li>
+        <li>설치가 끝나면 자동 차단은 다시 켜고, USB 디버깅은 꺼도 돼요</li>
+      </ol>
+      <p class="hint">APK 파일 (PC에서 받기): <code>${esc(APK_URL)}</code></p>
+      ${native ? '' : '<p class="hint">설치한 뒤 이 웹앱에서 <b>백업 파일 저장</b> → 앱에서 <b>백업에서 복원</b>으로 기록을 옮기세요.</p>'}`,
+    mount(w) {
+      if (native) checkLatest($('#up-latest', w));
+    },
+  });
+}
+
 /* ================= 백업 / 복원 ================= */
 const backupName = ext => `gagyebu-backup-${todayStr()}.${ext}`;
 const backupJson = () => JSON.stringify({ app: 'gagyebu', version: APP_VERSION, exported: new Date().toISOString(), data: S });
@@ -1752,7 +1794,7 @@ const ACT = {
     commit();
     if (S.settings.autoNotif && !nativeCall('listenerEnabled', true)) openNotifPerm();
   },
-  appUpdate: () => nativeCall('openUrl', null, APK_URL),
+  appUpdate: openUpdateGuide,
   install: async () => {
     if (!deferredInstall) return;
     deferredInstall.prompt();
