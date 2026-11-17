@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const STORE_KEY = 'gagyebu.v1';
 /** 안드로이드 앱(APK) 안에서 실행될 때만 존재하는 네이티브 연결 */
 const NATIVE = window.GagyebuNative || null;
@@ -25,7 +25,10 @@ function addMonths(ym, n) {
   return `${Math.floor(t / 12)}-${pad((t % 12) + 1)}`;
 }
 const monthLabel = ym => `${Number(ym.slice(0, 4))}년 ${Number(ym.slice(5, 7))}월`;
-const sortTx = (a, b) => b.date.localeCompare(a.date) || (b.created || 0) - (a.created || 0);
+const sortTx = (a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCompare(a.time || '') || (b.created || 0) - (a.created || 0);
+const hmOf = ts => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const nowHM = () => hmOf(Date.now());
+const validHM = s => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || '');
 
 const ICON = {
   left: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
@@ -41,20 +44,23 @@ const ICON = {
 };
 
 /* ================= 통화 ================= */
+// 사용하는 통화 (기본 통화·입력 통화·환율 모두 이 목록만)
 const CUR = {
   SGD: { name: '싱가포르 달러', sym: 'S$', dec: 2 },
   KRW: { name: '대한민국 원', sym: '원', dec: 0, suffix: true },
-  USD: { name: '미국 달러', sym: '$', dec: 2 },
-  EUR: { name: '유로', sym: '€', dec: 2 },
-  JPY: { name: '일본 엔', sym: '¥', dec: 0 },
+  USD: { name: '미국 달러', sym: 'US$', dec: 2 },
 };
-const cur = () => CUR[S.settings.currency] || CUR.SGD;
+const curOf = code => CUR[code] || { name: code, sym: `${code} `, dec: 2 };
+const cur = () => curOf(S.settings.currency);
 const fmtNum = (n, dec = cur().dec) => Math.abs(n).toLocaleString('ko-KR', { minimumFractionDigits: dec, maximumFractionDigits: dec });
-function money(n, { plus = false } = {}) {
-  const c = cur();
+/** 아무 통화나 표시 (예: fmtCur(12000, 'KRW') → 12,000원) */
+function fmtCur(n, code, { plus = false } = {}) {
+  const c = curOf(code);
   const sign = n < 0 ? '-' : plus && n > 0 ? '+' : '';
-  return c.suffix ? `${sign}${fmtNum(n)}${c.sym}` : `${sign}${c.sym}${fmtNum(n)}`;
+  return c.suffix ? `${sign}${fmtNum(n, c.dec)}${c.sym}` : `${sign}${c.sym}${fmtNum(n, c.dec)}`;
 }
+/** 기본 통화로 표시 */
+const money = (n, opts) => fmtCur(n, S.settings.currency, opts);
 const trim1 = v => String(Math.round(v * 10) / 10);
 function compact(n) {
   const c = cur(), a = Math.abs(n);
@@ -68,16 +74,16 @@ function compact(n) {
   if (a >= 1e4) return Math.round(a / 1e3) + 'k';
   return Math.round(a).toLocaleString('ko-KR');
 }
-const roundCur = v => { const f = 10 ** cur().dec; return Math.round(v * f) / f; };
-function parseAmount(s) {
+const roundTo = (v, dec) => { const f = 10 ** dec; return Math.round(v * f) / f; };
+const roundCur = v => roundTo(v, cur().dec);
+function parseAmount(s, dec = cur().dec) {
   const v = parseFloat(String(s).replace(/[^0-9.]/g, ''));
-  return isFinite(v) ? roundCur(v) : 0;
+  return isFinite(v) ? roundTo(v, dec) : 0;
 }
-/** 입력 중인 금액 문자열에 천 단위 쉼표를 넣습니다. */
-function formatAmountInput(raw) {
-  const dec = cur().dec;
+/** 입력 중인 금액 문자열에 천 단위 쉼표를 넣습니다. dec = 소수 자릿수 (원·엔은 0) */
+function formatAmountInput(raw, dec = cur().dec) {
   let v = String(raw).replace(/[^0-9.]/g, '');
-  if (dec === 0) v = v.replace(/\./g, '');
+  if (dec === 0) v = v.split('.')[0]; // 원·엔 등: 소수점 이하는 버림 (점을 지우면 금액이 커짐)
   else {
     const i = v.indexOf('.');
     if (i >= 0) v = v.slice(0, i + 1) + v.slice(i + 1).replace(/\./g, '').slice(0, dec);
@@ -87,7 +93,26 @@ function formatAmountInput(raw) {
   const ipf = ip ? Number(ip).toLocaleString('ko-KR') : fp !== undefined ? '0' : '';
   return fp !== undefined ? `${ipf}.${fp}` : ipf;
 }
-const amountToInput = n => (n ? formatAmountInput(n.toFixed(cur().dec).replace(/\.?0+$/, m => (m.startsWith('.') ? '' : m))) : '');
+const amountToInput = (n, dec = cur().dec) =>
+  n ? formatAmountInput(n.toFixed(dec).replace(/\.?0+$/, m => (m.startsWith('.') ? '' : m)), dec) : '';
+
+/* ---------- 환율 (1 기본통화 = rate 외화) ---------- */
+/** 기본 통화를 바꾼 뒤 새 환율을 아직 못 받았으면 0 */
+const rateOf = code =>
+  code === S.settings.currency ? 1 : S.settings.ratesBase === S.settings.currency ? S.settings.rates[code] || 0 : 0;
+/** 외화 금액 → 기본 통화 (환율 없으면 null) */
+const toBase = (amt, code) => {
+  const r = rateOf(code);
+  return r > 0 ? roundCur(amt / r) : null;
+};
+function rateText(code, r = rateOf(code)) {
+  const base = S.settings.currency;
+  if (!(r > 0)) return '환율 없음';
+  const f = v => v.toLocaleString('ko-KR', { maximumFractionDigits: v >= 100 ? 0 : v >= 1 ? 2 : 4 });
+  return r >= 1 ? `1 ${base} = ${f(r)} ${code}` : `1 ${code} = ${f(1 / r)} ${base}`;
+}
+/** 원래 통화로 입력·결제한 금액 표시 */
+const origLabel = t => (t.ocur ? fmtCur(t.oamt, t.ocur) : t.orig || '');
 
 /* ================= 데이터 ================= */
 const DEFAULT_CATS = {
@@ -95,7 +120,7 @@ const DEFAULT_CATS = {
     ['food', '식비', '🍚'], ['cafe', '카페·간식', '☕'], ['transport', '교통', '🚇'], ['housing', '주거·관리비', '🏠'],
     ['phone', '통신', '📱'], ['living', '생활용품', '🧺'], ['shopping', '쇼핑', '🛍️'], ['health', '의료·건강', '💊'],
     ['leisure', '문화·여가', '🎬'], ['travel', '여행', '✈️'], ['edu', '교육', '📚'], ['gift', '경조사·선물', '🎁'],
-    ['etc_e', '기타', '📦'],
+    ['parents', '부모님', '👪'], ['etc_e', '기타', '📦'],
   ],
   income: [
     ['salary', '급여', '💼'], ['bonus', '상여', '🎉'], ['interest', '이자·투자', '📈'],
@@ -104,13 +129,22 @@ const DEFAULT_CATS = {
 };
 const EMOJIS = ['🍚', '🍜', '🍔', '🍱', '☕', '🧋', '🍺', '🍰', '🚇', '🚕', '🚗', '⛽', '🏠', '💡', '📱', '💻',
   '🧺', '🛒', '🛍️', '👕', '💄', '💇', '💊', '🏥', '🏋️', '🎬', '🎮', '🎵', '✈️', '🏨', '📚', '🎓',
-  '🎁', '💐', '🐶', '👶', '🔧', '🧾', '💳', '🏦', '📦', '💼', '🎉', '📈', '💰', '🔁', '💌', '💵'];
+  '🎁', '💐', '👪', '🐶', '👶', '🔧', '🧾', '💳', '🏦', '📦', '💼', '🎉', '📈', '💰', '🔁', '💌', '💵'];
+/**
+ * 업데이트로 새로 생긴 기본 카테고리 (catSeed 번호 순). 기존 사용자에게 한 번만 추가하고,
+ * 사용자가 지운 뒤에는 다시 넣지 않습니다.
+ */
+const ADDED_CATS = [{ seed: 1, id: 'parents', name: '부모님', icon: '👪' }];
+const CAT_SEED = Math.max(...ADDED_CATS.map(c => c.seed));
 
 function defaultState() {
   const mk = list => list.map(([id, name, icon]) => ({ id, name, icon }));
   return {
     version: 1,
-    settings: { currency: 'SGD', theme: 'system', lastBackup: 0, autoNotif: true, rates: {}, notifBlock: [] },
+    settings: {
+      currency: 'SGD', theme: 'system', lastBackup: 0, autoNotif: true, notifBlock: [],
+      rates: {}, ratesBase: '', ratesAt: 0, ratesDate: '', ratesSrc: '', catSeed: CAT_SEED,
+    },
     categories: { expense: mk(DEFAULT_CATS.expense), income: mk(DEFAULT_CATS.income) },
     methods: ['카드', '현금', '계좌이체'],
     tx: [],
@@ -120,6 +154,16 @@ function defaultState() {
   };
 }
 const validType = t => t === 'income' || t === 'expense';
+/** 예전 데이터에 업데이트로 생긴 기본 카테고리를 한 번만 추가 ('기타' 바로 앞에) */
+function seedCats(list, seen) {
+  const out = [...list];
+  for (const c of ADDED_CATS) {
+    if (c.seed <= seen || out.some(x => x.id === c.id || x.name === c.name)) continue;
+    const i = out.findIndex(x => x.name === '기타');
+    out.splice(i >= 0 ? i : out.length, 0, { id: c.id, name: c.name, icon: c.icon });
+  }
+  return out;
+}
 function migrate(d) {
   const base = defaultState();
   if (!d || typeof d !== 'object') return base;
@@ -134,16 +178,29 @@ function migrate(d) {
   const ds = d.settings || {};
   const rates = {};
   if (ds.rates && typeof ds.rates === 'object')
-    for (const [k, v] of Object.entries(ds.rates)) if (/^[A-Z]{3}$/.test(k) && num(v) > 0) rates[k] = num(v);
+    for (const [k, v] of Object.entries(ds.rates)) if (CUR[k] && num(v) > 0) rates[k] = num(v);
   const str = (v, n) => String(v ?? '').slice(0, n);
+  const currency = CUR[ds.currency] ? ds.currency : base.settings.currency;
+  // 원래 통화로 입력한 금액 정보 (없으면 기본 통화로 입력한 것)
+  const origFields = o => {
+    if (!o.ocur || !(num(o.oamt) > 0)) return {};
+    if (CUR[o.ocur]) return { ocur: o.ocur, oamt: num(o.oamt), orate: num(o.orate) || undefined };
+    return { orig: `${str(o.ocur, 3)} ${num(o.oamt).toLocaleString('ko-KR')}` };
+  };
   return {
     version: 1,
     settings: {
-      currency: CUR[ds.currency] ? ds.currency : base.settings.currency,
+      currency,
       theme: ['system', 'light', 'dark'].includes(ds.theme) ? ds.theme : 'system',
       lastBackup: num(ds.lastBackup),
       autoNotif: ds.autoNotif !== false,
       rates,
+      // 예전 버전의 수동 환율은 당시 기본 통화 기준
+      ratesBase: CUR[ds.ratesBase] ? ds.ratesBase : Object.keys(rates).length ? currency : '',
+      ratesAt: num(ds.ratesAt),
+      ratesDate: str(ds.ratesDate, 10),
+      ratesSrc: str(ds.ratesSrc, 30),
+      catSeed: CAT_SEED,
       notifBlock: Array.isArray(ds.notifBlock) ? ds.notifBlock.map(p => str(p, 120)).filter(Boolean) : [],
     },
     inbox: (Array.isArray(d.inbox) ? d.inbox : [])
@@ -158,7 +215,7 @@ function migrate(d) {
         id: str(l.id || uid(), 40), time: num(l.time), app: str(l.app, 40), pkg: str(l.pkg, 120), text: str(l.text, 400),
         status: str(l.status, 10), note: str(l.note, 80), txId: l.txId ? str(l.txId, 40) : undefined,
       })),
-    categories: { expense: cats('expense'), income: cats('income') },
+    categories: { expense: seedCats(cats('expense'), num(ds.catSeed)), income: cats('income') },
     methods: Array.isArray(d.methods) ? d.methods.map(m => String(m).slice(0, 20)).filter(Boolean) : base.methods,
     tx: (Array.isArray(d.tx) ? d.tx : [])
       .filter(t => t && validType(t.type) && num(t.amount) > 0 && /^\d{4}-\d{2}-\d{2}$/.test(t.date))
@@ -166,8 +223,11 @@ function migrate(d) {
         id: String(t.id || uid()), type: t.type, amount: num(t.amount), cat: String(t.cat || ''),
         date: t.date, memo: String(t.memo || '').slice(0, 60), method: String(t.method || ''),
         rid: t.rid ? String(t.rid) : undefined, created: num(t.created),
+        // 시간이 없던 예전 기록은 그날 입력한 경우에만 입력 시각으로 채움
+        time: validHM(t.time) ? t.time : num(t.created) && ymd(new Date(num(t.created))) === t.date ? hmOf(num(t.created)) : '',
         auto: t.auto ? 1 : undefined, orig: t.orig ? String(t.orig).slice(0, 30) : undefined,
         refund: t.refund ? 1 : undefined,
+        ...origFields(t),
       })),
     recurring: (Array.isArray(d.recurring) ? d.recurring : [])
       .filter(r => r && validType(r.type) && num(r.amount) > 0 && /^\d{4}-\d{2}$/.test(r.last))
@@ -175,6 +235,8 @@ function migrate(d) {
         id: String(r.id || uid()), type: r.type, amount: num(r.amount), cat: String(r.cat || ''),
         memo: String(r.memo || ''), method: String(r.method || ''),
         day: Math.min(31, Math.max(1, Math.round(num(r.day)) || 1)), last: r.last,
+        time: validHM(r.time) ? r.time : '',
+        ...origFields(r),
       })),
   };
 }
@@ -248,7 +310,13 @@ function runRecurring() {
       const [y, mo] = m.split('-').map(Number);
       const date = `${m}-${pad(Math.min(r.day, dim(y, mo)))}`;
       if (date > today) break;
-      S.tx.push({ id: uid(), type: r.type, amount: r.amount, cat: r.cat, date, memo: r.memo, method: r.method, rid: r.id, created: Date.now() });
+      const t = { id: uid(), type: r.type, amount: r.amount, cat: r.cat, date, time: r.time || '', memo: r.memo, method: r.method, rid: r.id, created: Date.now() };
+      // 외화 고정지출(예: 원화 통신비)은 그때그때 환율로 환산, 환율이 없으면 등록 당시 금액
+      if (r.ocur) {
+        const conv = toBase(r.oamt, r.ocur);
+        Object.assign(t, { ocur: r.ocur, oamt: r.oamt, orate: rateOf(r.ocur) || r.orate, amount: conv ?? r.amount });
+      }
+      S.tx.push(t);
       r.last = m;
       added++;
       m = addMonths(m, 1);
@@ -356,7 +424,7 @@ function txGroups(list, { withYear = false } = {}) {
 
 function txRow(t) {
   const c = catOf(t);
-  const sub = [t.memo ? c.name : '', t.method, t.refund ? '↩ 환불·취소' : '', t.rid ? '🔁 반복' : '', t.auto ? '🔔 자동' : '', t.orig || '']
+  const sub = [t.time || '', t.memo ? c.name : '', t.method, origLabel(t), t.refund ? '↩ 환불·취소' : '', t.rid ? '🔁 반복' : '', t.auto ? '🔔 자동' : '']
     .filter(Boolean).join(' · ');
   return `<button class="tx" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-icon">${esc(c.icon)}</span>
@@ -526,14 +594,12 @@ function viewSettings() {
   let notif;
   if (NATIVE) {
     const perm = nativeCall('listenerEnabled', false);
-    const nRates = Object.keys(S.settings.rates).filter(k => k !== S.settings.currency).length;
     notif = `<section><h3 class="sec-title">결제 알림 자동 기록</h3><div class="card list">
       <div class="row"><span class="row-icon">🔔</span><span class="grow">알림으로 자동 기록</span>
         <button class="switch ${S.settings.autoNotif ? 'on' : ''}" data-act="autoNotif" role="switch" aria-checked="${S.settings.autoNotif}" aria-label="알림으로 자동 기록"><i></i></button></div>
       ${perm ? setRow('notifPerm', '✅', '알림 접근 권한', '허용됨') : setRow('notifPerm', '⚠️', '<b>알림 접근 권한 허용하기</b>', '필요')}
       ${setRow('inbox', '📥', '확인 필요한 알림', `${S.inbox.length}건`)}
       ${setRow('notifLog', '📜', '인식 기록', `${S.notifLog.length}건`)}
-      ${setRow('rates', '💱', '다른 통화 환율', nRates ? `${nRates}개 설정` : '설정 안 함')}
       ${setRow('notifTest', '🧪', '알림 문구 테스트')}
       ${setRow('appUpdate', '⬇️', '앱 업데이트 받기', `v${APP_VERSION}`)}
     </div><p class="hint">은행·카드·결제 앱의 알림과 문자에서 금액·가맹점을 읽어 자동으로 기록해요. 카테고리는 같은 가맹점의 이전 기록을 따라가요. 알림 내용은 이 폰 밖으로 나가지 않아요.</p></section>`;
@@ -550,7 +616,8 @@ function viewSettings() {
   }
   return `
   <section><h3 class="sec-title">기본 설정</h3><div class="card list">
-    ${setRow('currency', '💱', '통화', `${S.settings.currency} (${c.sym})`)}
+    ${setRow('currency', '💰', '기본 통화', `${S.settings.currency} (${c.sym.trim()})`)}
+    ${setRow('rates', '💱', '환율', S.settings.ratesBase === S.settings.currency && S.settings.ratesAt ? `자동 · ${fmtTime(S.settings.ratesAt)}` : '받는 중')}
     <div class="row"><span class="row-icon">🌓</span><span class="grow">화면 테마</span>
       <div class="seg sm">${themes.map(([v, l]) => `<button data-act="theme" data-v="${v}" class="${S.settings.theme === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
   </div></section>
@@ -692,18 +759,29 @@ const curAffix = () => {
 
 function openTxForm(tx, preset = {}) {
   const editing = !!tx;
+  const base = S.settings.currency;
   const f = editing
-    ? { ...tx }
-    : { type: 'expense', cat: preset.cat || null, date: preset.date || defaultDate(), memo: preset.memo || '', method: S.methods[0] || '' };
-  const [pre, suf] = curAffix();
+    ? { ...tx, time: tx.time || '', cur: tx.ocur || base }
+    : {
+        type: 'expense', cat: preset.cat || null, date: preset.date || defaultDate(), time: preset.time || nowHM(),
+        memo: preset.memo || '', method: S.methods[0] || '', cur: CUR[preset.cur] ? preset.cur : base,
+      };
+  const amt0 = editing ? (tx.ocur ? tx.oamt : tx.amount) : preset.amount || 0;
+  // 기본 통화 먼저, 그다음 최근에 쓴 외화, 나머지
+  const recent = [...new Set(expTx().sort(sortTx).map(t => t.ocur).filter(k => CUR[k]))];
+  const curList = [...new Set([base, ...recent, ...Object.keys(CUR)])];
   const memos = [...new Set(expTx().sort((a, b) => (b.created || 0) - (a.created || 0)).map(t => t.memo).filter(Boolean))].slice(0, 40);
   const body = `
-    <label class="amount-box" id="f-amt-box">${pre}<input id="f-amt" inputmode="decimal" enterkeyhint="done" placeholder="0" autocomplete="off" aria-label="금액" value="${editing ? amountToInput(tx.amount) : amountToInput(preset.amount || 0)}">${suf}</label>
+    <div class="amount-box" id="f-amt-box"><span class="amount-cur" id="f-pre"></span><input id="f-amt" inputmode="decimal" enterkeyhint="done" placeholder="0" autocomplete="off" aria-label="금액" value="${amountToInput(amt0, curOf(f.cur).dec)}"><span class="amount-cur" id="f-suf"></span>
+      <span class="cur-pill"><b id="f-cur-code"></b> ▾<select id="f-cur" aria-label="통화">${curList
+        .map(k => `<option value="${k}" ${k === f.cur ? 'selected' : ''}>${k} · ${esc(CUR[k].name)}${k === base ? ' (기본)' : ''}</option>`).join('')}</select></span></div>
+    <div class="conv" id="f-conv" hidden></div>
     <div class="f-label">카테고리</div>
     <div class="cat-grid" id="f-cats"></div>
-    <div class="f-label">날짜</div>
+    <div class="f-label">날짜·시간</div>
     <div class="date-row"><input type="date" id="f-date" class="input" value="${f.date}" aria-label="날짜">
-      <button class="chip" data-q="0">오늘</button><button class="chip" data-q="-1">어제</button></div>
+      <input type="time" id="f-time" class="input time" value="${f.time}" aria-label="시간"></div>
+    <div class="chips quick"><button class="chip sm" data-q="now">지금</button><button class="chip sm" data-q="-1">어제</button></div>
     <div id="f-mwrap"><div class="f-label">결제수단</div><div class="chips" id="f-methods"></div></div>
     <div class="f-label">메모</div>
     <input id="f-memo" class="input" maxlength="60" placeholder="예: 점심, 마트 장보기" list="f-memo-list" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off">
@@ -713,16 +791,47 @@ function openTxForm(tx, preset = {}) {
       <span><b>환불·결제취소</b><small>돌려받은 금액이에요. 이번 달 지출 합계에서 빠져요.</small></span></label>
     ${editing
       ? (tx.rid ? '<p class="note">🔁 매월 반복으로 자동 기록된 내역이에요. 여기서 고치면 이 내역만 바뀝니다.</p>' : '') +
-        (tx.auto ? `<p class="note">🔔 결제 알림에서 자동 기록된 내역이에요${tx.orig ? ` (원래 금액 ${esc(tx.orig)})` : ''}. 카테고리를 바꾸면 다음부터 같은 가맹점은 그 카테고리로 기록돼요.</p>` : '')
+        (tx.auto ? `<p class="note">🔔 결제 알림에서 자동 기록된 내역이에요${origLabel(tx) ? ` (원래 금액 ${esc(origLabel(tx))})` : ''}. 카테고리를 바꾸면 다음부터 같은 가맹점은 그 카테고리로 기록돼요.</p>` : '')
       : `<label class="check"><input type="checkbox" id="f-rec" ${preset.rec ? 'checked' : ''}>
           <span><b>매월 반복</b><small>매달 같은 날짜에 자동으로 기록돼요 (월세·통신비·구독료 등)</small></span></label>`}`;
 
+  let onRates = null;
   openSheet({
     title: editing ? '내역 수정' : '내역 추가',
     body,
     footer: `${editing ? '<button class="btn ghost danger-ink" data-f="del">삭제</button>' : ''}<button class="btn primary grow" data-f="save">저장</button>`,
+    onClose: () => onRates && window.removeEventListener('gagyebu:rates', onRates),
     mount(w) {
       const amt = $('#f-amt', w), cats = $('#f-cats', w), methods = $('#f-methods', w);
+      const sel = $('#f-cur', w), conv = $('#f-conv', w);
+      // 수정할 때 통화를 그대로 두면 처음 기록한 환율 유지 (금액이 환율 변동으로 바뀌지 않게)
+      const rateFor = code => (editing && tx.ocur === code && tx.orate ? tx.orate : rateOf(code));
+      const updConv = () => {
+        if (f.cur === base) { conv.hidden = true; return; }
+        conv.hidden = false;
+        const r = rateFor(f.cur);
+        const v = parseAmount(amt.value, curOf(f.cur).dec);
+        conv.innerHTML = r > 0
+          ? `≈ <b>${money(v > 0 ? roundCur(v / r) : 0)}</b>로 기록 · ${esc(rateText(f.cur, r))}`
+          : `⚠ ${esc(f.cur)} 환율을 아직 받지 못했어요. 인터넷에 연결되면 자동으로 받아와요.`;
+      };
+      const drawCur = () => {
+        const c = curOf(f.cur);
+        $('#f-pre', w).textContent = c.suffix ? '' : c.sym;
+        $('#f-suf', w).textContent = c.suffix ? c.sym : '';
+        $('#f-cur-code', w).textContent = f.cur;
+        updConv();
+      };
+      drawCur();
+      sel.addEventListener('change', () => {
+        f.cur = sel.value;
+        amt.value = formatAmountInput(amt.value, curOf(f.cur).dec);
+        drawCur();
+        if (!(rateOf(f.cur) > 0)) updateRates({ force: true });
+      });
+      onRates = updConv;
+      window.addEventListener('gagyebu:rates', onRates);
+      $('#f-amt-box', w).addEventListener('click', e => { if (!e.target.closest('select, input')) amt.focus(); });
       cats.innerHTML = S.categories.expense
         .map(c => `<button class="cat-btn ${c.id === f.cat ? 'on' : ''}" data-c="${esc(c.id)}"><span>${esc(c.icon)}</span><small>${esc(c.name)}</small></button>`)
         .join('');
@@ -746,12 +855,14 @@ function openTxForm(tx, preset = {}) {
       });
       $$('[data-q]', w).forEach(b => b.addEventListener('click', () => {
         const d = new Date();
-        d.setDate(d.getDate() + Number(b.dataset.q));
+        if (b.dataset.q === 'now') $('#f-time', w).value = nowHM();
+        else d.setDate(d.getDate() + Number(b.dataset.q));
         $('#f-date', w).value = ymd(d);
       }));
       amt.addEventListener('input', () => {
-        amt.value = formatAmountInput(amt.value);
+        amt.value = formatAmountInput(amt.value, curOf(f.cur).dec);
         $('#f-amt-box', w).classList.remove('err');
+        updConv();
       });
       amt.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); amt.blur(); } });
       $('#f-memo', w).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
@@ -768,8 +879,8 @@ function openTxForm(tx, preset = {}) {
           toast('삭제했어요', { label: '되돌리기', fn: () => { S.tx.push(tx); commit(); } });
           return;
         }
-        const amount = parseAmount(amt.value);
-        if (!(amount > 0)) {
+        const entered = parseAmount(amt.value, curOf(f.cur).dec);
+        if (!(entered > 0)) {
           const box = $('#f-amt-box', w);
           box.classList.remove('err');
           void box.offsetWidth;
@@ -784,24 +895,40 @@ function openTxForm(tx, preset = {}) {
           toast('카테고리를 선택해 주세요');
           return;
         }
+        // 외화로 입력했으면 기본 통화로 환산하고 원래 금액·환율을 함께 저장
+        let amount = entered, orig = { ocur: undefined, oamt: undefined, orate: undefined };
+        if (f.cur !== base) {
+          const r = rateFor(f.cur);
+          if (!(r > 0)) {
+            toast(`${f.cur} 환율이 아직 없어요. 인터넷 연결 후 다시 저장해 주세요`);
+            updateRates({ force: true });
+            return;
+          }
+          amount = Math.max(roundCur(entered / r), 1 / 10 ** cur().dec);
+          orig = { ocur: f.cur, oamt: entered, orate: r };
+        }
         const date = /^\d{4}-\d{2}-\d{2}$/.test($('#f-date', w).value) ? $('#f-date', w).value : todayStr();
+        const time = validHM($('#f-time', w).value) ? $('#f-time', w).value : '';
         const memo = $('#f-memo', w).value.trim();
         const method = f.type === 'expense' ? f.method : '';
         const refund = $('#f-refund', w).checked ? 1 : 0;
         if (editing) {
-          Object.assign(tx, { type: f.type, amount, cat: f.cat, date, memo, method, refund: refund || undefined });
+          // 예전 방식의 원래 금액 문구는 금액·통화를 바꾸면 의미가 없어지므로 지움
+          const keepOld = tx.orig && f.cur === base && amount === tx.amount;
+          Object.assign(tx, { type: f.type, amount, cat: f.cat, date, time, memo, method, refund: refund || undefined, ...orig, orig: keepOld ? tx.orig : undefined });
         } else {
-          const t = { id: uid(), type: f.type, amount, cat: f.cat, date, memo, method, created: Date.now() };
+          const t = { id: uid(), type: f.type, amount, cat: f.cat, date, time, memo, method, created: Date.now() };
           if (refund) t.refund = 1;
+          if (orig.ocur) Object.assign(t, orig);
           const rec = $('#f-rec', w);
           if (rec && rec.checked && !refund) {
-            const r = { id: uid(), type: f.type, amount, cat: f.cat, memo, method, day: Number(date.slice(8, 10)), last: ymOf(date) };
+            const r = { id: uid(), type: f.type, amount, cat: f.cat, memo, method, time, day: Number(date.slice(8, 10)), last: ymOf(date) };
+            if (orig.ocur) Object.assign(r, orig);
             S.recurring.push(r);
             t.rid = r.id;
           }
           if (preset.inboxId) {
             t.auto = 1;
-            if (preset.orig) t.orig = preset.orig;
             S.inbox = S.inbox.filter(i => i.id !== preset.inboxId);
           }
           S.tx.push(t);
@@ -862,19 +989,73 @@ function openCatDetail(type, catId, month) {
   });
 }
 
+/**
+ * 기본 통화를 바꾸면 모든 금액(내역·매월 반복)을 새 기본 통화로 환산합니다.
+ * - 새 기본 통화로 입력했던 내역은 원래 금액 그대로 (예: 12,000원 → 12,000원)
+ * - 나머지는 현재 환율로 환산하고 원래 통화·금액을 함께 보관 → 되돌리면 처음 금액으로 복원
+ */
+function convertBase(to) {
+  const from = S.settings.currency;
+  const r = rateOf(to); // 1 from = r to
+  if (from === to || !(r > 0)) return false;
+  const dec = curOf(to).dec;
+  const conv = o => {
+    if (o.ocur === to && o.oamt > 0) {
+      o.amount = o.oamt;
+      delete o.ocur;
+      delete o.oamt;
+      delete o.orate;
+      return;
+    }
+    const a = Math.max(roundTo(o.amount * r, dec), 1 / 10 ** dec);
+    if (o.ocur && o.oamt > 0) o.orate = o.oamt / a; // 1 새 기본통화 = orate 원래통화
+    else Object.assign(o, { ocur: from, oamt: o.amount, orate: 1 / r });
+    o.amount = a;
+  };
+  S.tx.forEach(conv);
+  S.recurring.forEach(conv);
+  // 지금 가진 환율을 새 기준으로 바꿔 두고, 곧 새로 받아옴
+  const rates = {};
+  for (const k of Object.keys(CUR)) {
+    if (k === to) continue;
+    const v = k === from ? 1 / r : S.settings.rates[k] / r;
+    if (v > 0 && isFinite(v)) rates[k] = v;
+  }
+  Object.assign(S.settings, { currency: to, rates, ratesBase: to });
+  return true;
+}
+
 function openCurrency() {
   openSheet({
-    title: '통화 선택',
+    title: '기본 통화',
     body: `<div class="card-in list">${Object.entries(CUR).map(([k, c]) => `<button class="row" data-k="${k}"><span class="row-icon cur-sym">${c.sym}</span>
       <span class="grow">${c.name} <span class="muted">${k}</span></span>${S.settings.currency === k ? ICON.check : ''}</button>`).join('')}</div>
-      <p class="hint">통화를 바꿔도 기존 금액은 환산되지 않고 표시 단위만 바뀌어요.</p>`,
+      <p class="hint">기본 통화는 합계·통계를 보여 주는 통화예요. 바꾸면 지금까지의 내역을 현재 환율로 환산하고 원래 금액도 함께 남겨요. 다시 원래 통화로 바꾸면 처음 금액으로 돌아와요.</p>`,
     mount(w) {
-      $('.sheet-body', w).addEventListener('click', e => {
+      $('.sheet-body', w).addEventListener('click', async e => {
         const b = e.target.closest('[data-k]');
         if (!b) return;
-        S.settings.currency = b.dataset.k;
+        const from = S.settings.currency, to = b.dataset.k;
+        if (to === from) { closeSheet(); return; }
+        if (S.tx.length || S.recurring.length) {
+          if (!(rateOf(to) > 0)) {
+            toast('환율을 받는 중이에요. 잠시 후 다시 시도해 주세요');
+            updateRates({ force: true });
+            return;
+          }
+          const ok = await confirmBox(
+            `기본 통화를 <b>${esc(to)}</b>로 바꿀까요?<br><small>내역 ${S.tx.length}건${S.recurring.length ? ` · 매월 반복 ${S.recurring.length}건` : ''}을 ` +
+              `현재 환율(${esc(rateText(to))})로 환산해요. 원래 금액은 함께 남고, 다시 ${esc(from)}로 바꾸면 처음 금액으로 돌아와요.</small>`,
+            { ok: '바꾸기' });
+          if (!ok) return;
+          convertBase(to);
+        } else {
+          S.settings.currency = to;
+        }
         commit();
         closeSheet();
+        toast(`기본 통화를 ${to}로 바꿨어요`);
+        updateRates({ force: true });
       });
     },
   });
@@ -1003,7 +1184,7 @@ function openRecurring() {
         fe += r.amount;
         const c = catOf(r);
         return `<button class="tx" data-x="edit" data-id="${esc(r.id)}"><span class="tx-icon">${esc(c.icon)}</span>
-          <span class="tx-main"><span class="tx-title">${esc(r.memo || c.name)}</span><span class="tx-sub">매월 ${r.day}일 · ${esc(c.name)}${r.method ? ' · ' + esc(r.method) : ''}</span></span>
+          <span class="tx-main"><span class="tx-title">${esc(r.memo || c.name)}</span><span class="tx-sub">매월 ${r.day}일${r.time ? ' ' + r.time : ''} · ${esc(c.name)}${r.method ? ' · ' + esc(r.method) : ''}${r.ocur ? ' · ' + esc(fmtCur(r.oamt, r.ocur)) : ''}</span></span>
           <span class="tx-amt">${money(r.amount)}</span></button>`;
       }).join('');
       return `<div class="card-in">${rows}</div>
@@ -1025,28 +1206,35 @@ function openRecurring() {
 
 function openRecEdit(r) {
   const c = catOf(r);
-  const [pre, suf] = curAffix();
+  // 외화 고정지출이면 그 통화로 편집 (기록할 때마다 그때 환율로 환산)
+  const code = r.ocur || S.settings.currency, cc = curOf(code);
+  const pre = cc.suffix ? '' : `<span class="amount-cur">${cc.sym}</span>`, suf = cc.suffix ? `<span class="amount-cur">${cc.sym}</span>` : '';
   openSheet({
     title: '반복 내역 편집',
     body: `<p class="note">${esc(c.icon)} ${esc(c.name)}${r.method ? ' · ' + esc(r.method) : ''}</p>
       <div class="f-label">금액</div>
-      <label class="amount-box sm">${pre}<input id="r-amt" inputmode="decimal" autocomplete="off" value="${amountToInput(r.amount)}">${suf}</label>
-      <div class="f-label">매월 기록일</div>
-      <select id="r-day" class="input">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}" ${r.day === i + 1 ? 'selected' : ''}>${i + 1}일${i + 1 >= 29 ? ' (없는 달은 말일)' : ''}</option>`).join('')}</select>
+      <label class="amount-box sm">${pre}<input id="r-amt" inputmode="decimal" autocomplete="off" value="${amountToInput(r.ocur ? r.oamt : r.amount, cc.dec)}">${suf}</label>
+      ${r.ocur ? `<p class="conv">${esc(code)} 금액이에요. 매달 기록할 때 그날 환율로 ${esc(S.settings.currency)}로 바꿔요.</p>` : ''}
+      <div class="f-label">매월 기록일·시간</div>
+      <div class="date-row"><select id="r-day" class="input">${Array.from({ length: 31 }, (_, i) => `<option value="${i + 1}" ${r.day === i + 1 ? 'selected' : ''}>매월 ${i + 1}일${i + 1 >= 29 ? ' (없는 달은 말일)' : ''}</option>`).join('')}</select>
+        <input type="time" id="r-time" class="input time" value="${r.time || ''}" aria-label="시간"></div>
       <div class="f-label">메모</div>
       <input id="r-memo" class="input" maxlength="60" value="${esc(r.memo)}" autocomplete="off">
       <p class="hint">변경 내용은 앞으로 기록될 내역부터 적용돼요. 삭제해도 이미 기록된 내역은 남아 있어요.</p>`,
     footer: '<button class="btn ghost danger-ink" data-f="del">삭제</button><button class="btn primary grow" data-f="save">저장</button>',
     mount(w) {
       const amt = $('#r-amt', w);
-      amt.addEventListener('input', () => { amt.value = formatAmountInput(amt.value); });
+      amt.addEventListener('input', () => { amt.value = formatAmountInput(amt.value, cc.dec); });
       $('.sheet-foot', w).addEventListener('click', async e => {
         const b = e.target.closest('[data-f]');
         if (!b) return;
         if (b.dataset.f === 'save') {
-          const v = parseAmount(amt.value);
+          const v = parseAmount(amt.value, cc.dec);
           if (!(v > 0)) { toast('금액을 입력해 주세요'); return; }
-          Object.assign(r, { amount: v, day: Number($('#r-day', w).value), memo: $('#r-memo', w).value.trim() });
+          const time = validHM($('#r-time', w).value) ? $('#r-time', w).value : '';
+          Object.assign(r, { day: Number($('#r-day', w).value), memo: $('#r-memo', w).value.trim(), time });
+          if (r.ocur) Object.assign(r, { oamt: v, amount: toBase(v, r.ocur) ?? r.amount });
+          else r.amount = v;
           commit();
           closeSheet();
           toast('반복 내역을 수정했어요');
@@ -1063,10 +1251,6 @@ function openRecEdit(r) {
 }
 
 /* ================= 결제 알림 자동 기록 ================= */
-const RATE_CURS = {
-  SGD: '싱가포르 달러', KRW: '대한민국 원', USD: '미국 달러', MYR: '말레이시아 링깃', JPY: '일본 엔', EUR: '유로',
-  GBP: '영국 파운드', AUD: '호주 달러', HKD: '홍콩 달러', THB: '태국 바트', IDR: '인도네시아 루피아', CNY: '중국 위안',
-};
 const DOLLAR_BASES = ['SGD', 'USD', 'AUD', 'HKD'];
 const NOTIF_STATUS = {
   saved: ['기록됨', 'ok'], review: ['확인 필요', 'warn'], ignored: ['무시', 'mute'],
@@ -1104,11 +1288,11 @@ function analyzeNotif(n) {
   // '$'만 있으면 기본 통화가 달러 계열일 때 기본 통화로 간주
   const amounts = p.amounts.map(a => ({ ...a, currency: a.currency || (DOLLAR_BASES.includes(base) && a.raw.includes('$') ? base : null) }));
   const hit = amounts.find(a => a.currency === base) || amounts[0];
-  let amount = null, orig = '';
+  let amount = null, orig = null;
   if (hit.currency === base) amount = roundCur(hit.amount);
-  else if (hit.currency && S.settings.rates[hit.currency] > 0) {
-    amount = roundCur(hit.amount / S.settings.rates[hit.currency]);
-    orig = hit.raw;
+  else if (hit.currency && rateOf(hit.currency) > 0) {
+    amount = Math.max(toBase(hit.amount, hit.currency), 1 / 10 ** cur().dec);
+    orig = { ocur: hit.currency, oamt: hit.amount, orate: rateOf(hit.currency) };
   }
   const memo = p.merchant || app;
   const key = NP.normKey(memo);
@@ -1132,8 +1316,8 @@ function processNotif(n) {
     text: [n.title, n.text].filter(Boolean).join(' · ').slice(0, 400), status: a.status, note: a.note,
   };
   if (a.status === 'saved') {
-    const tx = { id: uid(), type: a.type, amount: a.amount, cat: a.cat, date: a.date, memo: a.memo, method: a.method, created: a.time, auto: 1 };
-    if (a.orig) tx.orig = a.orig;
+    const tx = { id: uid(), type: a.type, amount: a.amount, cat: a.cat, date: a.date, time: hmOf(a.time), memo: a.memo, method: a.method, created: a.time, auto: 1 };
+    if (a.orig && CUR[a.orig.ocur]) Object.assign(tx, a.orig);
     if (a.refund) tx.refund = 1;
     S.tx.push(tx);
     entry.txId = tx.id;
@@ -1176,17 +1360,18 @@ function openInbox() {
     live: true,
     body: () => {
       if (!S.inbox.length) return '<p class="empty-sm">확인할 알림이 없어요 👍</p>';
-      return `<p class="hint">환율이 없거나 통화를 알 수 없는 알림이에요. 눌러서 금액을 확인하고 기록하세요.</p>
+      return `<p class="hint">${Object.keys(CUR).join('·')}가 아니거나 통화를 알 수 없는 알림이에요. 눌러서 ${esc(S.settings.currency)} 금액을 확인하고 기록하세요.</p>
         <div class="card-in">${S.inbox.map(i => {
           const c = catOf(i);
-          const rate = S.settings.rates[i.currency];
+          const rate = rateOf(i.currency);
+          const o = CUR[i.currency] ? fmtCur(i.amountOrig, i.currency) : `${i.currency} ${i.amountOrig.toLocaleString('ko-KR')}`;
           return `<div class="inbox-row"><button class="tx" data-x="rec" data-id="${esc(i.id)}"><span class="tx-icon">${esc(c.icon)}</span>
             <span class="tx-main"><span class="tx-title">${esc(i.memo)}</span>
-              <span class="tx-sub">${esc(i.currency)} ${i.amountOrig.toLocaleString('ko-KR')} · ${fmtTime(i.time)} · ${esc(i.app)}</span></span>
+              <span class="tx-sub">${esc(o)} · ${fmtTime(i.time)} · ${esc(i.app)}</span></span>
             <span class="tx-amt ${i.refund ? 'inc-ink' : ''}">${rate > 0 ? (i.refund ? '+' : '≈ ') + money(i.amountOrig / rate) : (i.refund ? '환불 ' : '') + '기록 ›'}</span></button>
             <button class="icon-btn sm" data-x="del" data-id="${esc(i.id)}" aria-label="삭제">${ICON.close}</button></div>`;
         }).join('')}</div>
-        <button class="btn block" data-x="rates">💱 환율 설정</button>`;
+        <button class="btn block" data-x="rates">💱 환율 보기</button>`;
     },
     mount(w) {
       $('.sheet-body', w).addEventListener('click', e => {
@@ -1196,13 +1381,13 @@ function openInbox() {
         if (b.dataset.x === 'rates') openRates();
         else if (b.dataset.x === 'del' && item) { S.inbox = S.inbox.filter(i => i !== item); commit(); }
         else if (b.dataset.x === 'rec' && item) {
-          const rate = S.settings.rates[item.currency];
-          const orig = `${item.currency} ${item.amountOrig.toLocaleString('ko-KR')}`;
+          // 통화를 아는 알림은 그 통화로 입력창을 채워서 환산은 입력창이 처리
+          const known = !!CUR[item.currency];
+          const o = known ? fmtCur(item.amountOrig, item.currency) : `${item.currency} ${item.amountOrig.toLocaleString('ko-KR')}`;
           openTxForm(null, {
-            type: item.type, cat: item.cat, memo: item.memo, date: item.date, inboxId: item.id, orig, refund: !!item.refund,
-            amount: rate > 0 ? roundCur(item.amountOrig / rate) : 0,
-            note: `🔔 ${esc(item.app)} 알림 · 원래 금액 <b>${esc(orig)}</b>` +
-              (rate > 0 ? ' (설정한 환율로 환산)' : ` — ${esc(S.settings.currency)} 금액을 입력해 주세요`),
+            type: item.type, cat: item.cat, memo: item.memo, date: item.date, time: hmOf(item.time), inboxId: item.id, refund: !!item.refund,
+            cur: known ? item.currency : undefined, amount: known ? item.amountOrig : 0,
+            note: `🔔 ${esc(item.app)} 알림 · 원래 금액 <b>${esc(o)}</b>` + (known ? '' : ` — ${esc(S.settings.currency)} 금액으로 입력해 주세요`),
           });
         }
       });
@@ -1274,27 +1459,103 @@ function openNotifPerm() {
   });
 }
 
-function openRates() {
+/* ---------- 환율 자동 업데이트 ---------- */
+// 보내는 정보는 기준 통화 코드뿐 (예: sgd). 무료·키 없음, 매일 갱신.
+const RATE_SOURCES = [
+  { name: 'Currency API', url: b => `https://latest.currency-api.pages.dev/v1/currencies/${b.toLowerCase()}.json`, pick: (j, b) => j[b.toLowerCase()] },
+  { name: 'Currency API', url: b => `https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${b.toLowerCase()}.json`, pick: (j, b) => j[b.toLowerCase()] },
+  { name: 'Frankfurter (ECB)', url: b => `https://api.frankfurter.dev/v1/latest?base=${b}`, pick: j => j.rates },
+];
+const RATES_MAX_AGE = 6 * 3600 * 1000; // 6시간마다 새로
+async function fetchRates(base) {
+  for (const src of RATE_SOURCES) {
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 10000);
+      const res = await fetch(src.url(base), { cache: 'no-store', signal: ctl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const j = await res.json();
+      const table = src.pick(j, base) || {};
+      const rates = {};
+      for (const code of Object.keys(CUR)) {
+        const v = Number(table[code.toLowerCase()] ?? table[code]);
+        if (code !== base && v > 0 && isFinite(v)) rates[code] = v;
+      }
+      if (Object.keys(CUR).every(k => k === base || rates[k] > 0)) return { rates, date: String(j.date || '').slice(0, 10), src: src.name };
+    } catch (e) {
+      /* 다음 출처 시도 */
+    }
+  }
+  return null;
+}
+let ratesBusy = false;
+/** 환율이 오래됐거나 기본 통화가 바뀌었으면 새로 받아옴 */
+async function updateRates({ force = false, silent = true } = {}) {
   const base = S.settings.currency;
-  const list = Object.keys(RATE_CURS).filter(k => k !== base);
+  const fresh = S.settings.ratesBase === base && Date.now() - (S.settings.ratesAt || 0) < RATES_MAX_AGE;
+  if (ratesBusy || (fresh && !force)) return;
+  if (navigator.onLine === false) {
+    if (!silent) toast('인터넷에 연결되어 있지 않아요');
+    return;
+  }
+  ratesBusy = true;
+  for (const s2 of sheets) if (s2.live) s2.refresh();
+  const r = await fetchRates(base);
+  ratesBusy = false;
+  if (!r || S.settings.currency !== base) {
+    for (const s2 of sheets) if (s2.live) s2.refresh();
+    if (!silent) toast('환율을 받아오지 못했어요');
+    return;
+  }
+  Object.assign(S.settings, { rates: r.rates, ratesBase: base, ratesAt: Date.now(), ratesDate: r.date, ratesSrc: r.src });
+  const settled = settleInbox();
+  commit();
+  window.dispatchEvent(new Event('gagyebu:rates'));
+  if (settled) toast(`환율을 받아 확인 필요 알림 ${settled}건을 기록했어요`);
+  else if (!silent) toast('환율을 업데이트했어요');
+}
+/** 환율이 없어서 '확인 필요'에 있던 알림을 환율이 생기면 자동 기록 */
+function settleInbox() {
+  let n = 0;
+  S.inbox = S.inbox.filter(i => {
+    const conv = CUR[i.currency] ? toBase(i.amountOrig, i.currency) : null;
+    if (conv === null) return true;
+    const t = {
+      id: uid(), type: 'expense', amount: Math.max(conv, 1 / 10 ** cur().dec), cat: i.cat, date: i.date, time: hmOf(i.time),
+      memo: i.memo, method: guessMethod(i.app), created: i.time, auto: 1,
+      ocur: i.currency, oamt: i.amountOrig, orate: rateOf(i.currency),
+    };
+    if (i.refund) t.refund = 1;
+    S.tx.push(t);
+    n++;
+    return false;
+  });
+  return n;
+}
+
+function openRates() {
   openSheet({
-    title: '다른 통화 환율',
-    body: `<p class="hint">알림 금액이 ${esc(base)}가 아니면 아래 환율로 바꿔서 기록해요. 비워 두면 ‘확인 필요’에 모아 둬요. 환율은 자동으로 바뀌지 않으니 가끔 고쳐 주세요.</p>
-      <div class="card-in list">${list.map(k => `<label class="row"><span class="grow">1 ${esc(base)} = <span class="muted">${esc(RATE_CURS[k])}</span></span>
-        <input class="input mini" inputmode="decimal" autocomplete="off" data-r="${k}" placeholder="—" value="${S.settings.rates[k] || ''}"><span class="rate-cur">${k}</span></label>`).join('')}</div>`,
-    footer: '<button class="btn primary grow" data-f="save">저장</button>',
+    title: '환율',
+    live: true,
+    body: () => {
+      const base = S.settings.currency;
+      const ok = S.settings.ratesBase === base && Object.keys(S.settings.rates).length;
+      const status = ratesBusy
+        ? '⏳ 환율을 받아오는 중…'
+        : ok
+          ? `마지막 업데이트 ${fmtTime(S.settings.ratesAt)}${S.settings.ratesDate ? ` · 기준일 ${esc(S.settings.ratesDate)}` : ''}${S.settings.ratesSrc ? ` · ${esc(S.settings.ratesSrc)}` : ''}`
+          : '아직 환율을 받지 못했어요. 인터넷에 연결되면 자동으로 받아와요.';
+      const rows = Object.keys(CUR).filter(k => k !== base).map(k =>
+        `<div class="row"><span class="row-icon cur-sym">${esc(CUR[k].sym.trim())}</span><span class="grow">${k} <span class="muted">${esc(CUR[k].name)}</span></span><span class="row-val">${esc(rateText(k))}</span></div>`).join('');
+      return `<p class="hint">다른 통화로 입력한 지출과 다른 통화 결제 알림을 이 환율로 ${esc(base)}로 바꿔 기록해요. 인터넷에 연결되어 있으면 앱을 열 때 자동으로 업데이트돼요 (6시간마다).</p>
+        <p class="rate-status">${status}</p>
+        <div class="card-in list">${rows}</div>`;
+    },
+    footer: '<button class="btn primary grow" data-f="refresh">지금 업데이트</button>',
     mount(w) {
       $('.sheet-foot', w).addEventListener('click', e => {
-        if (!e.target.closest('[data-f]')) return;
-        const rates = {};
-        $$('[data-r]', w).forEach(i => {
-          const v = parseFloat(i.value.replace(/,/g, ''));
-          if (v > 0) rates[i.dataset.r] = v;
-        });
-        S.settings.rates = rates;
-        commit();
-        closeSheet();
-        toast('환율을 저장했어요');
+        if (e.target.closest('[data-f]')) updateRates({ force: true, silent: false });
       });
     },
   });
@@ -1320,7 +1581,7 @@ function openNotifTest() {
           return;
         }
         const c = catOf(a);
-        const amt = a.amount !== null ? (a.refund ? '+' : '') + money(a.amount) + (a.orig ? ` <span class="muted">(${esc(a.orig)})</span>` : '') : esc(a.hit.raw);
+        const amt = a.amount !== null ? (a.refund ? '+' : '') + money(a.amount) + (a.orig ? ` <span class="muted">(${esc(fmtCur(a.orig.oamt, a.orig.ocur))})</span>` : '') : esc(a.hit.raw);
         out.innerHTML = `<table class="nt-table">
           <tr><th>처리</th><td>${a.status === 'saved' ? (a.refund ? '✅ 환불·취소로 기록 (지출에서 빠짐)' : '✅ 자동 기록') : `⚠️ ${esc(a.note)}`}</td></tr>
           <tr><th>금액</th><td>${amt}</td></tr>
@@ -1394,10 +1655,10 @@ function exportCsv() {
     if (/^[=+\-@]/.test(s)) s = "'" + s; // 엑셀 수식 실행 방지
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const rows = [['날짜', '카테고리', '금액', '결제수단', '메모', '반복', '알림 자동', '환불']];
+  const rows = [['날짜', '시간', '카테고리', `금액(${S.settings.currency})`, '결제수단', '메모', '원래 통화', '원래 금액', '반복', '알림 자동', '환불']];
   const list = expTx().sort((a, b) => a.date.localeCompare(b.date) || (a.created || 0) - (b.created || 0));
-  for (const t of list) rows.push([t.date, catOf(t).name, signed(t), t.method, t.memo, t.rid ? 'Y' : '', t.auto ? 'Y' : '', t.refund ? 'Y' : '']);
-  const csv = '﻿' + rows.map(r => r.map((v, i) => (i === 2 ? String(v) : safe(v))).join(',')).join('\r\n');
+  for (const t of list) rows.push([t.date, t.time || '', catOf(t).name, signed(t), t.method, t.memo, t.ocur || '', t.ocur ? (t.refund ? -t.oamt : t.oamt) : '', t.rid ? 'Y' : '', t.auto ? 'Y' : '', t.refund ? 'Y' : '']);
+  const csv = '﻿' + rows.map(r => r.map((v, i) => (i === 3 || i === 7 ? String(v) : safe(v))).join(',')).join('\r\n');
   if (NATIVE) {
     if (nativeSaveFile(`가계부_${todayStr()}.csv`, 'text/csv', csv, false)) toast(`다운로드/가계부 폴더에 CSV 저장 (${list.length}건)`);
     return;
@@ -1534,6 +1795,7 @@ window.addEventListener('appinstalled', () => { deferredInstall = null; toast('�
 let lastDay = todayStr();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
+  updateRates();
   const n = runRecurring();
   if (n || todayStr() !== lastDay) {
     if (UI.month === ymOf(lastDay)) UI.month = ymOf(todayStr());
@@ -1543,6 +1805,7 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 /* 다른 탭에서 데이터가 바뀌면 다시 불러오기 */
+window.addEventListener('online', () => updateRates());
 window.addEventListener('storage', e => {
   if (e.key === STORE_KEY) { S = load(); render(); }
 });
@@ -1551,6 +1814,7 @@ window.addEventListener('storage', e => {
 (function init() {
   if (history.state && (history.state.sheet || history.state.search)) history.replaceState(null, '');
   const added = runRecurring();
+  updateRates();
   render();
   if (added) toast(`반복 내역 ${added}건을 자동으로 기록했어요`);
   const params = new URLSearchParams(location.search);
