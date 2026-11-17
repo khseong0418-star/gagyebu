@@ -99,3 +99,40 @@ for (const [name, size, maskable] of [
   fs.writeFileSync(path.join(OUT, name), draw(size, maskable));
   console.log('wrote', name);
 }
+
+// 안드로이드 적응형 아이콘 전경 (배경색은 res/values/colors.xml). 108dp 캔버스, 중앙 66dp 안전영역에 맞게 축소
+function drawForeground(size, scale = 0.92) {
+  const SS = 4;
+  const k = 512 / size;
+  const buf = Buffer.alloc(size * size * 4);
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      let r = 0, g = 0, b = 0, a = 0;
+      for (let sy = 0; sy < SS; sy++) {
+        for (let sx = 0; sx < SS; sx++) {
+          const x = 256 + ((px + (sx + 0.5) / SS) * k - 256) / scale;
+          const y = 256 + ((py + (sy + 0.5) / SS) * k - 256) / scale;
+          let col = null;
+          for (const L of LAYERS) if (L.t === 'rr' ? inRR(x, y, L.g) : inC(x, y, L.g)) col = L.c;
+          if (!col) continue;
+          r += col[0]; g += col[1]; b += col[2]; a++;
+        }
+      }
+      const i = (py * size + px) * 4;
+      if (a) {
+        buf[i] = Math.round(r / a);
+        buf[i + 1] = Math.round(g / a);
+        buf[i + 2] = Math.round(b / a);
+        buf[i + 3] = Math.round((255 * a) / (SS * SS));
+      }
+    }
+  }
+  return png(size, size, buf);
+}
+const RES = path.join(__dirname, '..', 'android', 'app', 'src', 'main', 'res');
+for (const [dpi, size] of [['mdpi', 108], ['hdpi', 162], ['xhdpi', 216], ['xxhdpi', 324], ['xxxhdpi', 432]]) {
+  const dir = path.join(RES, `mipmap-${dpi}`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'ic_launcher_foreground.png'), drawForeground(size));
+  console.log('wrote android', dpi);
+}

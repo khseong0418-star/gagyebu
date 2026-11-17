@@ -1,0 +1,65 @@
+plugins {
+    id 'com.android.application'
+}
+
+// 웹앱(docs/)을 APK 안에 그대로 넣습니다. 앱 화면 코드는 웹과 하나로 관리.
+def webAssetsRoot = new File(buildDir, 'generated/webassets')
+def copyWebAssets = tasks.register('copyWebAssets', Sync) {
+    from(rootProject.file('../docs')) {
+        exclude '*.apk', 'sw.js'
+    }
+    into new File(webAssetsRoot, 'www')
+}
+tasks.named('preBuild') { dependsOn copyWebAssets }
+
+// 서명 키: android/keystore.properties (git에 올리지 않음)
+def keystoreProps = new Properties()
+def keystoreFile = rootProject.file('keystore.properties')
+if (keystoreFile.exists()) keystoreFile.withInputStream { keystoreProps.load(it) }
+
+android {
+    namespace 'app.gagyebu'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'app.gagyebu'
+        minSdk 29
+        targetSdk 34
+        versionCode 2
+        versionName '1.1.0'
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreFile.exists()) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs += [webAssetsRoot]
+        }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}

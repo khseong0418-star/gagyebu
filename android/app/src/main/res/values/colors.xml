@@ -1,0 +1,5 @@
+<resources>
+    <color name="bg">#f2f2ef</color>
+    <color name="ic_launcher_background">#5a48d4</color>
+    <bool name="light_bars">true</bool>
+</resources>

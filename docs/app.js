@@ -1,7 +1,11 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const STORE_KEY = 'gagyebu.v1';
+/** 안드로이드 앱(APK) 안에서 실행될 때만 존재하는 네이티브 연결 */
+const NATIVE = window.GagyebuNative || null;
+const NP = window.GagyebuNotif;
+const APK_URL = 'https://khseong0418-star.github.io/gagyebu/gagyebu.apk';
 
 /* ================= 유틸 ================= */
 const $ = (s, el = document) => el.querySelector(s);
@@ -106,12 +110,14 @@ function defaultState() {
   const mk = list => list.map(([id, name, icon]) => ({ id, name, icon }));
   return {
     version: 1,
-    settings: { currency: 'SGD', theme: 'system', lastBackup: 0 },
+    settings: { currency: 'SGD', theme: 'system', lastBackup: 0, autoNotif: true, rates: {}, notifBlock: [] },
     categories: { expense: mk(DEFAULT_CATS.expense), income: mk(DEFAULT_CATS.income) },
     methods: ['카드', '현금', '계좌이체'],
     tx: [],
     recurring: [],
     budget: { total: 0, cats: {} },
+    inbox: [],
+    notifLog: [],
   };
 }
 const validType = t => t === 'income' || t === 'expense';
@@ -129,13 +135,32 @@ function migrate(d) {
   const budgetCats = {};
   if (d.budget && d.budget.cats && typeof d.budget.cats === 'object')
     for (const [k, v] of Object.entries(d.budget.cats)) if (num(v) > 0) budgetCats[k] = num(v);
+  const ds = d.settings || {};
+  const rates = {};
+  if (ds.rates && typeof ds.rates === 'object')
+    for (const [k, v] of Object.entries(ds.rates)) if (/^[A-Z]{3}$/.test(k) && num(v) > 0) rates[k] = num(v);
+  const str = (v, n) => String(v ?? '').slice(0, n);
   return {
     version: 1,
     settings: {
-      currency: d.settings && CUR[d.settings.currency] ? d.settings.currency : base.settings.currency,
-      theme: d.settings && ['system', 'light', 'dark'].includes(d.settings.theme) ? d.settings.theme : 'system',
-      lastBackup: num(d.settings && d.settings.lastBackup),
+      currency: CUR[ds.currency] ? ds.currency : base.settings.currency,
+      theme: ['system', 'light', 'dark'].includes(ds.theme) ? ds.theme : 'system',
+      lastBackup: num(ds.lastBackup),
+      autoNotif: ds.autoNotif !== false,
+      rates,
+      notifBlock: Array.isArray(ds.notifBlock) ? ds.notifBlock.map(p => str(p, 120)).filter(Boolean) : [],
     },
+    inbox: (Array.isArray(d.inbox) ? d.inbox : [])
+      .filter(i => i && validType(i.type) && /^\d{4}-\d{2}-\d{2}$/.test(i.date))
+      .map(i => ({
+        id: str(i.id || uid(), 40), time: num(i.time), type: i.type, cat: str(i.cat, 40), memo: str(i.memo, 60),
+        date: i.date, currency: str(i.currency, 4), amountOrig: num(i.amountOrig), app: str(i.app, 40),
+      })),
+    notifLog: (Array.isArray(d.notifLog) ? d.notifLog : []).slice(0, 100).filter(l => l && typeof l === 'object')
+      .map(l => ({
+        id: str(l.id || uid(), 40), time: num(l.time), app: str(l.app, 40), pkg: str(l.pkg, 120), text: str(l.text, 400),
+        status: str(l.status, 10), note: str(l.note, 80), txId: l.txId ? str(l.txId, 40) : undefined,
+      })),
     categories: { expense: cats('expense'), income: cats('income') },
     methods: Array.isArray(d.methods) ? d.methods.map(m => String(m).slice(0, 20)).filter(Boolean) : base.methods,
     tx: (Array.isArray(d.tx) ? d.tx : [])
@@ -144,6 +169,7 @@ function migrate(d) {
         id: String(t.id || uid()), type: t.type, amount: num(t.amount), cat: String(t.cat || ''),
         date: t.date, memo: String(t.memo || '').slice(0, 60), method: String(t.method || ''),
         rid: t.rid ? String(t.rid) : undefined, created: num(t.created),
+        auto: t.auto ? 1 : undefined, orig: t.orig ? String(t.orig).slice(0, 30) : undefined,
       })),
     recurring: (Array.isArray(d.recurring) ? d.recurring : [])
       .filter(r => r && validType(r.type) && num(r.amount) > 0 && /^\d{4}-\d{2}$/.test(r.last))
@@ -271,6 +297,10 @@ function viewHome() {
   const list = txOfMonth(UI.month);
   const s = sums(list);
   let html = summaryCard(s);
+  if (S.inbox.length) {
+    html += `<button class="card nudge inbox-nudge" data-act="inbox"><span>🔔</span>
+      <span class="grow">확인이 필요한 결제 알림 <b>${S.inbox.length}건</b></span>${ICON.chev}</button>`;
+  }
   html += backupNudge();
   if (!list.length) {
     return html + `<div class="empty"><div class="empty-ico">📝</div>
@@ -343,7 +373,8 @@ function txGroups(list, { withYear = false } = {}) {
 
 function txRow(t) {
   const c = catOf(t);
-  const sub = [t.memo ? c.name : '', t.type === 'expense' ? t.method : '', t.rid ? '🔁 반복' : ''].filter(Boolean).join(' · ');
+  const sub = [t.memo ? c.name : '', t.type === 'expense' ? t.method : '', t.rid ? '🔁 반복' : '', t.auto ? '🔔 자동' : '', t.orig || '']
+    .filter(Boolean).join(' · ');
   return `<button class="tx" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-icon">${esc(c.icon)}</span>
     <span class="tx-main"><span class="tx-title">${esc(t.memo || c.name)}</span>${sub ? `<span class="tx-sub">${esc(sub)}</span>` : ''}</span>
@@ -526,7 +557,27 @@ function viewSettings() {
   const c = cur();
   const themes = [['system', '자동'], ['light', '라이트'], ['dark', '다크']];
   let install = '';
-  if (!isStandalone()) {
+  let notif;
+  if (NATIVE) {
+    const perm = nativeCall('listenerEnabled', false);
+    const nRates = Object.keys(S.settings.rates).filter(k => k !== S.settings.currency).length;
+    notif = `<section><h3 class="sec-title">결제 알림 자동 기록</h3><div class="card list">
+      <div class="row"><span class="row-icon">🔔</span><span class="grow">알림으로 자동 기록</span>
+        <button class="switch ${S.settings.autoNotif ? 'on' : ''}" data-act="autoNotif" role="switch" aria-checked="${S.settings.autoNotif}" aria-label="알림으로 자동 기록"><i></i></button></div>
+      ${perm ? setRow('notifPerm', '✅', '알림 접근 권한', '허용됨') : setRow('notifPerm', '⚠️', '<b>알림 접근 권한 허용하기</b>', '필요')}
+      ${setRow('inbox', '📥', '확인 필요한 알림', `${S.inbox.length}건`)}
+      ${setRow('notifLog', '📜', '인식 기록', `${S.notifLog.length}건`)}
+      ${setRow('rates', '💱', '다른 통화 환율', nRates ? `${nRates}개 설정` : '설정 안 함')}
+      ${setRow('notifTest', '🧪', '알림 문구 테스트')}
+      ${setRow('appUpdate', '⬇️', '앱 업데이트 받기', `v${APP_VERSION}`)}
+    </div><p class="hint">은행·카드·결제 앱의 알림과 문자에서 금액·가맹점을 읽어 자동으로 기록해요. 카테고리는 같은 가맹점의 이전 기록을 따라가요. 알림 내용은 이 폰 밖으로 나가지 않아요.</p></section>`;
+  } else {
+    notif = `<section><h3 class="sec-title">결제 알림 자동 기록</h3><div class="card list">
+      <a class="row" href="gagyebu.apk" download><span class="row-icon">📲</span><span class="grow">안드로이드 앱 받기 (APK)</span>${ICON.chev}</a>
+      ${setRow('notifTest', '🧪', '알림 문구 테스트')}
+    </div><p class="hint">웹앱은 다른 앱의 알림을 읽을 수 없어서 이 기능은 안드로이드 앱에서만 동작해요. 앱을 설치한 뒤 여기서 <b>백업 파일 저장</b> → 앱에서 <b>백업에서 복원</b>으로 기록을 옮기세요.</p></section>`;
+  }
+  if (!isStandalone() && !NATIVE) {
     install = deferredInstall
       ? `<section><h3 class="sec-title">앱 설치</h3><div class="card list">${setRow('install', '📲', '홈 화면에 앱 설치')}</div></section>`
       : `<section><h3 class="sec-title">앱 설치</h3><p class="hint">Chrome 메뉴(⋮) → <b>홈 화면에 추가</b> 또는 <b>앱 설치</b>를 누르면 일반 앱처럼 전체 화면·오프라인으로 사용할 수 있어요.</p></section>`;
@@ -545,6 +596,7 @@ function viewSettings() {
     ${setRow('methods', '💳', '결제수단', `${S.methods.length}개`)}
     ${setRow('recurring', '🔁', '매월 반복 내역', `${S.recurring.length}개`)}
   </div></section>
+  ${notif}
   <section><h3 class="sec-title">데이터 백업</h3><div class="card list">
     ${setRow('backupShare', '📤', '백업 보내기', '드라이브·메일 등')}
     ${setRow('backupSave', '💾', '백업 파일 저장', '다운로드')}
@@ -563,8 +615,19 @@ function applyTheme() {
   const root = document.documentElement;
   if (t === 'system') root.removeAttribute('data-theme');
   else root.dataset.theme = t;
-  const bg = getComputedStyle(root).getPropertyValue('--bg').trim();
+  const cs = getComputedStyle(root);
+  const bg = cs.getPropertyValue('--bg').trim();
   if (bg) $$('meta[name="theme-color"]').forEach(m => m.setAttribute('content', bg));
+  if (bg && /^#[0-9a-f]{6}$/i.test(bg)) nativeCall('setBars', null, bg, cs.colorScheme === 'dark');
+}
+/** 네이티브 함수를 안전하게 호출 (웹앱이면 fallback) */
+function nativeCall(name, fallback, ...args) {
+  try {
+    return NATIVE && typeof NATIVE[name] === 'function' ? NATIVE[name](...args) : fallback;
+  } catch (e) {
+    console.warn('native', name, e);
+    return fallback;
+  }
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', applyTheme);
 
@@ -668,12 +731,12 @@ function openTxForm(tx, preset = {}) {
   const editing = !!tx;
   const f = editing
     ? { ...tx }
-    : { type: preset.type || 'expense', cat: null, date: preset.date || defaultDate(), memo: '', method: S.methods[0] || '' };
+    : { type: preset.type || 'expense', cat: preset.cat || null, date: preset.date || defaultDate(), memo: preset.memo || '', method: S.methods[0] || '' };
   const [pre, suf] = curAffix();
   const memos = [...new Set([...S.tx].sort((a, b) => (b.created || 0) - (a.created || 0)).map(t => t.memo).filter(Boolean))].slice(0, 40);
   const body = `
     <div class="seg" id="f-type"><button data-t="expense">지출</button><button data-t="income">수입</button></div>
-    <label class="amount-box" id="f-amt-box">${pre}<input id="f-amt" inputmode="decimal" enterkeyhint="done" placeholder="0" autocomplete="off" aria-label="금액" value="${editing ? amountToInput(tx.amount) : ''}">${suf}</label>
+    <label class="amount-box" id="f-amt-box">${pre}<input id="f-amt" inputmode="decimal" enterkeyhint="done" placeholder="0" autocomplete="off" aria-label="금액" value="${editing ? amountToInput(tx.amount) : amountToInput(preset.amount || 0)}">${suf}</label>
     <div class="f-label">카테고리</div>
     <div class="cat-grid" id="f-cats"></div>
     <div class="f-label">날짜</div>
@@ -683,8 +746,10 @@ function openTxForm(tx, preset = {}) {
     <div class="f-label">메모</div>
     <input id="f-memo" class="input" maxlength="60" placeholder="예: 점심, 마트 장보기" list="f-memo-list" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off">
     <datalist id="f-memo-list">${memos.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
+    ${preset.note ? `<p class="note">${preset.note}</p>` : ''}
     ${editing
-      ? tx.rid ? '<p class="note">🔁 매월 반복으로 자동 기록된 내역이에요. 여기서 고치면 이 내역만 바뀝니다.</p>' : ''
+      ? (tx.rid ? '<p class="note">🔁 매월 반복으로 자동 기록된 내역이에요. 여기서 고치면 이 내역만 바뀝니다.</p>' : '') +
+        (tx.auto ? `<p class="note">🔔 결제 알림에서 자동 기록된 내역이에요${tx.orig ? ` (원래 금액 ${esc(tx.orig)})` : ''}. 카테고리를 바꾸면 다음부터 같은 가맹점은 그 카테고리로 기록돼요.</p>` : '')
       : `<label class="check"><input type="checkbox" id="f-rec" ${preset.rec ? 'checked' : ''}>
           <span><b>매월 반복</b><small>매달 같은 날짜에 자동으로 기록돼요 (월세·통신비·급여 등)</small></span></label>`}`;
 
@@ -738,7 +803,7 @@ function openTxForm(tx, preset = {}) {
       });
       amt.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); amt.blur(); } });
       $('#f-memo', w).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
-      if (!editing) amt.focus({ preventScroll: true });
+      if (!editing && !preset.amount) amt.focus({ preventScroll: true });
 
       $('.sheet-foot', w).addEventListener('click', e => {
         const b = e.target.closest('[data-f]');
@@ -779,6 +844,11 @@ function openTxForm(tx, preset = {}) {
             const r = { id: uid(), type: f.type, amount, cat: f.cat, memo, method, day: Number(date.slice(8, 10)), last: ymOf(date) };
             S.recurring.push(r);
             t.rid = r.id;
+          }
+          if (preset.inboxId) {
+            t.auto = 1;
+            if (preset.orig) t.orig = preset.orig;
+            S.inbox = S.inbox.filter(i => i.id !== preset.inboxId);
           }
           S.tx.push(t);
           requestPersist();
@@ -1072,6 +1142,273 @@ function openRecEdit(r) {
   });
 }
 
+/* ================= 결제 알림 자동 기록 ================= */
+const RATE_CURS = {
+  SGD: '싱가포르 달러', KRW: '대한민국 원', USD: '미국 달러', MYR: '말레이시아 링깃', JPY: '일본 엔', EUR: '유로',
+  GBP: '영국 파운드', AUD: '호주 달러', HKD: '홍콩 달러', THB: '태국 바트', IDR: '인도네시아 루피아', CNY: '중국 위안',
+};
+const DOLLAR_BASES = ['SGD', 'USD', 'AUD', 'HKD'];
+const NOTIF_STATUS = {
+  saved: ['기록됨', 'ok'], review: ['확인 필요', 'warn'], ignored: ['무시', 'mute'],
+  dup: ['중복', 'mute'], blocked: ['차단한 앱', 'mute'], off: ['꺼짐', 'mute'],
+};
+const fmtTime = ts => {
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+/** 알림을 보낸 앱 이름과 비슷한 결제수단이 있으면 그것, 없으면 기본 결제수단 */
+function guessMethod(app) {
+  const k = NP.normKey(app);
+  if (k.length >= 2) {
+    const m = S.methods.find(x => {
+      const mk = NP.normKey(x);
+      return mk.length >= 2 && (k.includes(mk) || mk.includes(k));
+    });
+    if (m) return m;
+  }
+  return S.methods[0] || '';
+}
+
+/** 알림 하나를 어떻게 처리할지 결정합니다 (데이터는 바꾸지 않음). */
+function analyzeNotif(n) {
+  const time = Number(n.time) || Date.now();
+  const app = String(n.app || n.pkg || '알림').slice(0, 40);
+  if (!S.settings.autoNotif) return { status: 'off', note: '자동 기록이 꺼져 있음' };
+  if (n.pkg && S.settings.notifBlock.includes(n.pkg)) return { status: 'blocked', note: '무시하도록 설정한 앱' };
+  const p = NP.parse(n);
+  if (!p.ok) return { status: 'ignored', note: p.reason };
+  const base = S.settings.currency;
+  // '$'만 있으면 기본 통화가 달러 계열일 때 기본 통화로 간주
+  const amounts = p.amounts.map(a => ({ ...a, currency: a.currency || (DOLLAR_BASES.includes(base) && a.raw.includes('$') ? base : null) }));
+  const hit = amounts.find(a => a.currency === base) || amounts[0];
+  let amount = null, orig = '';
+  if (hit.currency === base) amount = roundCur(hit.amount);
+  else if (hit.currency && S.settings.rates[hit.currency] > 0) {
+    amount = roundCur(hit.amount / S.settings.rates[hit.currency]);
+    orig = hit.raw;
+  }
+  const memo = p.merchant || app;
+  const key = NP.normKey(memo);
+  const near = t0 => Math.abs(t0 - time) < 10 * 60 * 1000;
+  const dup =
+    S.tx.some(t => t.auto && t.type === p.type && amount !== null && Math.abs(t.amount - amount) < 0.005 && NP.normKey(t.memo) === key && near(t.created || 0)) ||
+    S.inbox.some(i => i.type === p.type && i.amountOrig === hit.amount && NP.normKey(i.memo) === key && near(i.time));
+  if (dup) return { status: 'dup', note: '같은 결제가 이미 기록됨 (문자·앱 알림 중복 등)' };
+  const cat = NP.guessCategory(memo, p.type, [...S.tx].sort(sortTx), S.categories[p.type], `${n.title || ''} ${n.text || ''}`);
+  const info = { type: p.type, memo, merchantFound: !!p.merchant, date: ymd(new Date(time)), cat, time, app, hit, amount, orig, method: p.type === 'expense' ? guessMethod(app) : '' };
+  if (amount === null) return { status: 'review', note: hit.currency ? `${hit.currency} 환율이 없어 확인 필요` : '통화를 알 수 없어 확인 필요', ...info };
+  return { status: 'saved', note: '', ...info };
+}
+
+/** 분석 결과를 실제로 반영하고 인식 기록에 남깁니다. */
+function processNotif(n) {
+  const a = analyzeNotif(n);
+  const entry = {
+    id: uid(), time: Number(n.time) || Date.now(), app: String(n.app || n.pkg || '').slice(0, 40), pkg: String(n.pkg || ''),
+    text: [n.title, n.text].filter(Boolean).join(' · ').slice(0, 400), status: a.status, note: a.note,
+  };
+  if (a.status === 'saved') {
+    const tx = { id: uid(), type: a.type, amount: a.amount, cat: a.cat, date: a.date, memo: a.memo, method: a.method, created: a.time, auto: 1 };
+    if (a.orig) tx.orig = a.orig;
+    S.tx.push(tx);
+    entry.txId = tx.id;
+    entry.note = `${catOf(tx).name} · ${money(a.type === 'income' ? a.amount : -a.amount, { plus: true })}`;
+  } else if (a.status === 'review') {
+    S.inbox.unshift({ id: uid(), time: a.time, type: a.type, cat: a.cat, memo: a.memo, date: a.date, currency: a.hit.currency || '?', amountOrig: a.hit.amount, app: a.app });
+    if (S.inbox.length > 50) S.inbox.length = 50;
+  }
+  S.notifLog.unshift(entry);
+  if (S.notifLog.length > 100) S.notifLog.length = 100;
+  return entry;
+}
+
+/** 안드로이드 쪽에 쌓인 알림을 가져와 처리 (앱을 열거나 알림이 올 때 호출) */
+function pullNative() {
+  if (!NATIVE) return;
+  let list = [];
+  try {
+    list = JSON.parse(nativeCall('takePending', '[]') || '[]');
+  } catch {
+    list = [];
+  }
+  if (!Array.isArray(list) || !list.length) {
+    render();
+    for (const s of sheets) if (s.live) s.refresh();
+    return;
+  }
+  list.sort((a, b) => (a.time || 0) - (b.time || 0));
+  const res = list.map(processNotif);
+  const saved = res.filter(r => r.status === 'saved').length;
+  const review = res.filter(r => r.status === 'review').length;
+  commit();
+  if (saved || review) toast(`결제 알림 ${saved}건 자동 기록${review ? ` · 확인 필요 ${review}건` : ''}`, { label: '보기', fn: openNotifLog });
+}
+window.__gagyebuNativeNotif = pullNative;
+
+function openInbox() {
+  openSheet({
+    title: '확인이 필요한 결제 알림',
+    live: true,
+    body: () => {
+      if (!S.inbox.length) return '<p class="empty-sm">확인할 알림이 없어요 👍</p>';
+      return `<p class="hint">환율이 없거나 통화를 알 수 없는 알림이에요. 눌러서 금액을 확인하고 기록하세요.</p>
+        <div class="card-in">${S.inbox.map(i => {
+          const c = catOf(i);
+          const rate = S.settings.rates[i.currency];
+          return `<div class="inbox-row"><button class="tx" data-x="rec" data-id="${esc(i.id)}"><span class="tx-icon">${esc(c.icon)}</span>
+            <span class="tx-main"><span class="tx-title">${esc(i.memo)}</span>
+              <span class="tx-sub">${esc(i.currency)} ${i.amountOrig.toLocaleString('ko-KR')} · ${fmtTime(i.time)} · ${esc(i.app)}</span></span>
+            <span class="tx-amt">${rate > 0 ? '≈ ' + money(i.amountOrig / rate) : '기록 ›'}</span></button>
+            <button class="icon-btn sm" data-x="del" data-id="${esc(i.id)}" aria-label="삭제">${ICON.close}</button></div>`;
+        }).join('')}</div>
+        <button class="btn block" data-x="rates">💱 환율 설정</button>`;
+    },
+    mount(w) {
+      $('.sheet-body', w).addEventListener('click', e => {
+        const b = e.target.closest('[data-x]');
+        if (!b) return;
+        const item = S.inbox.find(i => i.id === b.dataset.id);
+        if (b.dataset.x === 'rates') openRates();
+        else if (b.dataset.x === 'del' && item) { S.inbox = S.inbox.filter(i => i !== item); commit(); }
+        else if (b.dataset.x === 'rec' && item) {
+          const rate = S.settings.rates[item.currency];
+          const orig = `${item.currency} ${item.amountOrig.toLocaleString('ko-KR')}`;
+          openTxForm(null, {
+            type: item.type, cat: item.cat, memo: item.memo, date: item.date, inboxId: item.id, orig,
+            amount: rate > 0 ? roundCur(item.amountOrig / rate) : 0,
+            note: `🔔 ${esc(item.app)} 알림 · 원래 금액 <b>${esc(orig)}</b>` +
+              (rate > 0 ? ' (설정한 환율로 환산)' : ` — ${esc(S.settings.currency)} 금액을 입력해 주세요`),
+          });
+        }
+      });
+    },
+  });
+}
+
+function openNotifLog() {
+  openSheet({
+    title: '알림 인식 기록',
+    live: true,
+    body: () => {
+      if (!S.notifLog.length) {
+        return `<p class="empty-sm">아직 인식한 알림이 없어요.<br>${NATIVE ? '금액이 들어 있는 알림이 오면 여기에 표시돼요.' : '안드로이드 앱에서 동작해요.'}</p>`;
+      }
+      return '<p class="hint">금액이 들어 있는 알림만 최근 100건까지 보여요. 결제와 상관없는 앱은 ‘이 앱 무시’로 막을 수 있어요.</p>' +
+        S.notifLog.map(l => {
+          const [label, cls] = NOTIF_STATUS[l.status] || [l.status, 'mute'];
+          const blocked = l.pkg && S.settings.notifBlock.includes(l.pkg);
+          const linked = l.txId && S.tx.some(t => t.id === l.txId);
+          return `<div class="log-item">
+            <div class="log-head"><span class="badge ${cls}">${label}</span><b>${esc(l.app)}</b><span class="muted">${fmtTime(l.time)}</span>
+              ${l.pkg ? `<button class="chip sm" data-x="block" data-pkg="${esc(l.pkg)}">${blocked ? '무시 해제' : '이 앱 무시'}</button>` : ''}</div>
+            <div class="log-text">${esc(l.text)}</div>
+            ${l.note ? `<div class="log-note">${linked ? `<button class="link-btn" data-act="edit" data-id="${esc(l.txId)}">${esc(l.note)} ›</button>` : esc(l.note)}</div>` : ''}
+          </div>`;
+        }).join('') +
+        '<button class="btn block" data-x="clear">인식 기록 지우기</button>';
+    },
+    mount(w) {
+      $('.sheet-body', w).addEventListener('click', e => {
+        const b = e.target.closest('[data-x]');
+        if (!b) return;
+        if (b.dataset.x === 'block') {
+          const arr = S.settings.notifBlock, i = arr.indexOf(b.dataset.pkg);
+          if (i >= 0) arr.splice(i, 1); else arr.push(b.dataset.pkg);
+          commit();
+          toast(i >= 0 ? '이 앱 알림을 다시 인식해요' : '이 앱 알림은 앞으로 무시해요');
+        } else if (b.dataset.x === 'clear') {
+          S.notifLog = [];
+          commit();
+        }
+      });
+    },
+  });
+}
+
+function openNotifPerm() {
+  openSheet({
+    title: '알림 접근 권한',
+    live: true,
+    body: () => {
+      const ok = nativeCall('listenerEnabled', false);
+      return `<p class="confirm-msg">${ok ? '✅ 권한이 허용되어 있어요. 결제 알림이 오면 자동으로 기록돼요.' : '결제 알림을 읽으려면 <b>알림 접근</b> 권한이 필요해요.'}</p>
+        <ol class="steps">
+          <li><b>알림 접근 설정 열기</b> → <b>가계부</b>를 켜고 <b>허용</b>을 누르세요.</li>
+          <li>스위치가 회색으로 막혀 있거나 <b>‘제한된 설정’</b> 안내가 뜨면: <b>앱 정보 열기</b> → 오른쪽 위 <b>⋮</b> → <b>제한된 설정 허용</b> → 다시 1번.</li>
+          <li>가계부로 돌아오면 자동으로 확인돼요.</li>
+        </ol>
+        <p class="hint">알림 내용은 이 폰 안에서만 처리되고 인터넷으로 보내지 않아요. 금액이 들어 있는 알림만 저장해요.</p>`;
+    },
+    footer: '<button class="btn grow" data-f="app">앱 정보 열기</button><button class="btn primary grow" data-f="listener">알림 접근 설정 열기</button>',
+    mount(w) {
+      $('.sheet-foot', w).addEventListener('click', e => {
+        const b = e.target.closest('[data-f]');
+        if (b) nativeCall(b.dataset.f === 'app' ? 'openAppSettings' : 'openListenerSettings', null);
+      });
+    },
+  });
+}
+
+function openRates() {
+  const base = S.settings.currency;
+  const list = Object.keys(RATE_CURS).filter(k => k !== base);
+  openSheet({
+    title: '다른 통화 환율',
+    body: `<p class="hint">알림 금액이 ${esc(base)}가 아니면 아래 환율로 바꿔서 기록해요. 비워 두면 ‘확인 필요’에 모아 둬요. 환율은 자동으로 바뀌지 않으니 가끔 고쳐 주세요.</p>
+      <div class="card-in list">${list.map(k => `<label class="row"><span class="grow">1 ${esc(base)} = <span class="muted">${esc(RATE_CURS[k])}</span></span>
+        <input class="input mini" inputmode="decimal" autocomplete="off" data-r="${k}" placeholder="—" value="${S.settings.rates[k] || ''}"><span class="rate-cur">${k}</span></label>`).join('')}</div>`,
+    footer: '<button class="btn primary grow" data-f="save">저장</button>',
+    mount(w) {
+      $('.sheet-foot', w).addEventListener('click', e => {
+        if (!e.target.closest('[data-f]')) return;
+        const rates = {};
+        $$('[data-r]', w).forEach(i => {
+          const v = parseFloat(i.value.replace(/,/g, ''));
+          if (v > 0) rates[i.dataset.r] = v;
+        });
+        S.settings.rates = rates;
+        commit();
+        closeSheet();
+        toast('환율을 저장했어요');
+      });
+    },
+  });
+}
+
+function openNotifTest() {
+  openSheet({
+    title: '알림 문구 테스트',
+    body: `<p class="hint">받은 결제 알림이나 문자 내용을 붙여 넣으면 어떻게 기록될지 미리 보여 줘요. 실제로 저장되지는 않아요.</p>
+      <textarea id="nt-text" class="input area" rows="5" placeholder="예) You spent S$6.50 at Toast Box&#10;예) KB국민카드1234승인 홍*동 12,000원 일시불 11/17 12:34 스타벅스"></textarea>
+      <div id="nt-out" class="nt-out"></div>`,
+    mount(w) {
+      const ta = $('#nt-text', w), out = $('#nt-out', w);
+      ta.addEventListener('input', () => {
+        const v = ta.value.trim();
+        if (!v) { out.innerHTML = ''; return; }
+        const keep = S.settings.autoNotif;
+        S.settings.autoNotif = true;
+        const a = analyzeNotif({ title: '', text: v, app: '테스트', time: Date.now() });
+        S.settings.autoNotif = keep;
+        if (a.status !== 'saved' && a.status !== 'review') {
+          out.innerHTML = `<p class="note">❌ 기록하지 않아요 — ${esc(a.note)}</p>`;
+          return;
+        }
+        const c = catOf(a);
+        const amt = a.amount !== null ? money(a.type === 'income' ? a.amount : -a.amount, { plus: true }) + (a.orig ? ` <span class="muted">(${esc(a.orig)})</span>` : '') : esc(a.hit.raw);
+        out.innerHTML = `<table class="nt-table">
+          <tr><th>처리</th><td>${a.status === 'saved' ? '✅ 자동 기록' : `⚠️ ${esc(a.note)}`}</td></tr>
+          <tr><th>구분</th><td>${a.type === 'income' ? '수입' : '지출'}</td></tr>
+          <tr><th>금액</th><td>${amt}</td></tr>
+          <tr><th>가맹점</th><td>${a.merchantFound ? esc(a.memo) : '<span class="muted">찾지 못함 (앱 이름으로 기록)</span>'}</td></tr>
+          <tr><th>카테고리</th><td>${esc(c.icon)} ${esc(c.name)}</td></tr></table>`;
+      });
+      ta.focus({ preventScroll: true });
+    },
+  });
+}
+
 /* ================= 백업 / 복원 ================= */
 const backupName = ext => `gagyebu-backup-${todayStr()}.${ext}`;
 const backupJson = () => JSON.stringify({ app: 'gagyebu', version: APP_VERSION, exported: new Date().toISOString(), data: S });
@@ -1087,12 +1424,29 @@ function downloadBlob(blob, name) {
   a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
 }
+/** 안드로이드 앱에서는 WebView가 파일 다운로드를 못 해서 네이티브로 저장/공유 */
+function nativeSaveFile(name, mime, content, share) {
+  const r = nativeCall('saveFile', 'error', name, mime, content, !!share);
+  if (r !== 'ok') toast('파일을 저장하지 못했어요');
+  return r === 'ok';
+}
 function backupSave() {
+  if (NATIVE) {
+    if (nativeSaveFile(backupName('json'), 'application/json', backupJson(), false)) {
+      markBackup();
+      toast('다운로드/가계부 폴더에 저장했어요');
+    }
+    return;
+  }
   downloadBlob(new Blob([backupJson()], { type: 'application/json' }), backupName('json'));
   markBackup();
   toast('백업 파일을 다운로드 폴더에 저장했어요');
 }
 async function backupShare() {
+  if (NATIVE) {
+    if (nativeSaveFile(backupName('json'), 'application/json', backupJson(), true)) markBackup();
+    return;
+  }
   const json = backupJson();
   const files = [
     new File([json], backupName('json'), { type: 'application/json' }),
@@ -1122,6 +1476,10 @@ function exportCsv() {
     rows.push([t.date, t.type === 'income' ? '수입' : '지출', catOf(t).name, t.amount, t.method, t.memo, t.rid ? 'Y' : '']);
   }
   const csv = '﻿' + rows.map(r => r.map((v, i) => (i === 3 ? String(v) : safe(v))).join(',')).join('\r\n');
+  if (NATIVE) {
+    if (nativeSaveFile(`가계부_${todayStr()}.csv`, 'text/csv', csv, false)) toast(`다운로드/가계부 폴더에 CSV 저장 (${S.tx.length}건)`);
+    return;
+  }
   downloadBlob(new Blob([csv], { type: 'text/csv;charset=utf-8' }), `가계부_${todayStr()}.csv`);
   toast(`CSV 파일 저장 (${S.tx.length}건)`);
 }
@@ -1204,6 +1562,17 @@ const ACT = {
   restore: () => $('#file-in').click(),
   csv: exportCsv,
   reset: resetAll,
+  inbox: openInbox,
+  notifLog: openNotifLog,
+  notifPerm: openNotifPerm,
+  notifTest: openNotifTest,
+  rates: openRates,
+  autoNotif: () => {
+    S.settings.autoNotif = !S.settings.autoNotif;
+    commit();
+    if (S.settings.autoNotif && !nativeCall('listenerEnabled', true)) openNotifPerm();
+  },
+  appUpdate: () => nativeCall('openUrl', null, APK_URL),
   install: async () => {
     if (!deferredInstall) return;
     deferredInstall.prompt();
@@ -1269,7 +1638,13 @@ window.addEventListener('storage', e => {
   const add = params.get('add');
   if (params.has('add') || params.has('source')) history.replaceState(null, '', location.pathname);
   if (add === 'expense' || add === 'income') openTxForm(null, { type: add });
-  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+  if (NATIVE) {
+    pullNative();
+    // 앱 첫 실행 때 알림 접근 권한 안내
+    let intro = '1';
+    try { intro = localStorage.getItem('gagyebu.nativeIntro'); localStorage.setItem('gagyebu.nativeIntro', '1'); } catch {}
+    if (!intro && !nativeCall('listenerEnabled', true)) openNotifPerm();
+  } else if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 })();

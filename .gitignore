@@ -1,0 +1,8 @@
+# Android 빌드 산출물·로컬 설정
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+# 서명 키 (절대 공개하지 말 것 — OneDrive에만 보관)
+android/release.jks
+android/keystore.properties
