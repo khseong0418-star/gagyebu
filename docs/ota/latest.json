@@ -1,8 +1,8 @@
 {
-  "version": "1.4.2",
+  "version": "1.4.3",
   "minNative": 6,
-  "bundle": "bundle-1.4.2.json",
-  "size": 213195,
-  "sha256": "4c216deb3b3ef0d8c2400871f2e053d745387f794496b671558597b2aa9d36ad",
-  "sig": "MEUCIFb836ppjYyG/7Cr4o7x6QBhSOaWLfHe59vlhb0vi794AiEA7cwkfSAXNUems7HG4NxpkTw2zz+eDlUbpz/TyJPTqoI="
+  "bundle": "bundle-1.4.3.json",
+  "size": 213803,
+  "sha256": "b2352c741b7fa3663c92cafd862d8a8d2631de2ad94bd10f4a5289c81a66f080",
+  "sig": "MEUCIQD7/dbXF3KQx+rbcQ6cOgKfMKEgz20bjUFxPN+P51/AzwIgSomVX/6CC5yRYMjqcGtRVDGQ0JlUzx5X7ZxAL99T5UU="
 }

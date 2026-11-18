@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.2';
+const APP_VERSION = '1.4.3';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -121,7 +121,7 @@ const DEFAULT_CATS = {
   expense: [
     ['food', '식비', '🍚'], ['cafe', '카페·간식', '☕'], ['transport', '교통', '🚇'], ['housing', '주거·관리비', '🏠'],
     ['phone', '통신', '📱'], ['living', '생활용품', '🧺'], ['shopping', '쇼핑', '🛍️'], ['health', '의료·건강', '💊'],
-    ['leisure', '문화·여가', '🎬'], ['travel', '여행', '✈️'], ['edu', '교육', '📚'], ['gift', '경조사·선물', '🎁'],
+    ['beauty', '미용', '💇'], ['leisure', '문화·여가', '🎬'], ['travel', '여행', '✈️'], ['edu', '교육', '📚'], ['gift', '경조사·선물', '🎁'],
     ['parents', '부모님', '👪'], ['etc_e', '기타', '📦'],
   ],
   income: [
@@ -134,9 +134,12 @@ const EMOJIS = ['🍚', '🍜', '🍔', '🍱', '☕', '🧋', '🍺', '🍰', '
   '🎁', '💐', '👪', '🐶', '👶', '🔧', '🧾', '💳', '🏦', '📦', '💼', '🎉', '📈', '💰', '🔁', '💌', '💵'];
 /**
  * 업데이트로 새로 생긴 기본 카테고리 (catSeed 번호 순). 기존 사용자에게 한 번만 추가하고,
- * 사용자가 지운 뒤에는 다시 넣지 않습니다.
+ * 사용자가 지운 뒤에는 다시 넣지 않습니다. after: 그 카테고리 바로 뒤에 넣음 (없으면 '기타' 앞).
  */
-const ADDED_CATS = [{ seed: 1, id: 'parents', name: '부모님', icon: '👪' }];
+const ADDED_CATS = [
+  { seed: 1, id: 'parents', name: '부모님', icon: '👪' },
+  { seed: 2, id: 'beauty', name: '미용', icon: '💇', after: 'health' },
+];
 const CAT_SEED = Math.max(...ADDED_CATS.map(c => c.seed));
 
 function defaultState() {
@@ -161,8 +164,9 @@ function seedCats(list, seen) {
   const out = [...list];
   for (const c of ADDED_CATS) {
     if (c.seed <= seen || out.some(x => x.id === c.id || x.name === c.name)) continue;
-    const i = out.findIndex(x => x.name === '기타');
-    out.splice(i >= 0 ? i : out.length, 0, { id: c.id, name: c.name, icon: c.icon });
+    const after = c.after ? out.findIndex(x => x.id === c.after) : -1;
+    const etc = out.findIndex(x => x.name === '기타');
+    out.splice(after >= 0 ? after + 1 : etc >= 0 ? etc : out.length, 0, { id: c.id, name: c.name, icon: c.icon });
   }
   return out;
 }

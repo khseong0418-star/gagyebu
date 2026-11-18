@@ -5,7 +5,7 @@ const N = require('../docs/notif.js');
 const EXP = [
   { id: 'food', name: '식비' }, { id: 'cafe', name: '카페·간식' }, { id: 'transport', name: '교통' },
   { id: 'housing', name: '주거·관리비' }, { id: 'phone', name: '통신' }, { id: 'living', name: '생활용품' },
-  { id: 'shopping', name: '쇼핑' }, { id: 'health', name: '의료·건강' }, { id: 'leisure', name: '문화·여가' },
+  { id: 'shopping', name: '쇼핑' }, { id: 'health', name: '의료·건강' }, { id: 'beauty', name: '미용' }, { id: 'leisure', name: '문화·여가' },
   { id: 'travel', name: '여행' }, { id: 'edu', name: '교육' }, { id: 'gift', name: '경조사·선물' }, { id: 'etc_e', name: '기타' },
 ];
 const INC = [
@@ -75,6 +75,12 @@ const cases = [
     want: { type: 'expense', amount: 9400, currency: 'KRW', merchant: '카카오T일', cat: 'transport' } },
   { app: 'KB Star Banking', title: '출금 120,000원', text: '홍*동님 11/18 11:54 123456**789 연세튼튼치 체크카드출금 120,000 잔액1,105,167',
     want: { type: 'expense', amount: 120000, currency: 'KRW', merchant: '연세튼튼치' } },
+  { app: 'KB Star Banking', title: '출금 33,000원', text: '홍*동님 11/18 17:20 123456**789 준오헤어강 체크카드출금 33,000 잔액1,072,067',
+    want: { type: 'expense', amount: 33000, currency: 'KRW', merchant: '준오헤어강', cat: 'beauty' } },
+  { app: 'YouTrip', title: 'YouTrip', text: 'You spent SGD 45.00 at NAILS GLAMOUR ORCHARD',
+    want: { type: 'expense', amount: 45, currency: 'SGD', merchant: 'NAILS GLAMOUR ORCHARD', cat: 'beauty' } },
+  { app: 'YouTrip', title: 'YouTrip', text: 'You spent SGD 8.50 at BROWNIE POINTS BAKERY',
+    want: { type: 'expense', amount: 8.5, currency: 'SGD', merchant: 'BROWNIE POINTS BAKERY', cat: 'cafe' } },
   // 출금취소 = 결제 취소 (가맹점 이름 없이 옴 → 앱에서 같은 금액의 직전 결제를 찾아 맞춤)
   { app: 'KB Star Banking', title: '입금 8,900원', text: '홍*동님 11/18 11:57 123456**789 출금취소 8,900 잔액1,114,067',
     want: { type: 'income', refund: true, amount: 8900, currency: 'KRW', merchant: '' } },

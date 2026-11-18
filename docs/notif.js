@@ -134,6 +134,7 @@
     ['shopping', /shopee|lazada|amazon|taobao|uniqlo|zara|h&m|ikea|qoo10|쿠팡|무신사|11번가|지마켓|g마켓|올리브영|에이블리|지그재그/i],
     ['phone', /singtel|starhub|\bm1\b|circles|giga|simba|\bskt\b|\bkt\b|lg ?u\+|알뜰폰|통신/i],
     ['health', /guardian|watsons|clinic|hospital|pharmacy|dental|polyclinic|medical|병원|약국|의원|치과|한의원/i],
+    ['beauty', /hair|salon|barber|\bnails?\b|\bspa\b|beauty|\blash(es)?\b|\bbrows?\b|waxing|미용|헤어|네일|바버|왁싱|속눈썹|뷰티|피부관리|에스테틱/i],
     ['leisure', /netflix|spotify|disney|youtube|steam|playstation|nintendo|cinema|golden village|\bgv\b|shaw|cathay|cgv|롯데시네마|메가박스|영화|멜론|티빙|왓챠/i],
     ['travel', /airbnb|agoda|booking\.com|expedia|trip\.com|hotel|scoot|singapore airlines|airasia|jetstar|klook|항공|호텔|여기어때|야놀자/i],
     ['housing', /\brent\b|월세|관리비|sp services|sp group|utilities|town council|전기요금|도시가스|수도요금/i],
