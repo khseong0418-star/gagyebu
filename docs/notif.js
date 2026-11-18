@@ -36,9 +36,9 @@
 
   /* ---------- 키워드 ---------- */
   const IGNORE = /(\botp\b|one[- ]?time|verification code|인증\s?번호|비밀번호|결제\s?예정|청구\s?(금액|예정)|statement|minimum payment|payment due|due date|reminder|declined|unsuccessful|failed|거절|실패|한도\s?초과|이벤트|혜택|쿠폰|coupon|promo|% off|\boffer\b)/i;
-  const INCOME = /(received|credited|incoming|refund|reversal|cashback received|환불|입금|승인\s?취소|결제\s?취소|취소\s?승인|매출\s?취소)/i;
+  const INCOME = /(received|credited|incoming|refund|reversal|cashback received|환불|입금|승인\s?취소|결제\s?취소|출금\s?취소|취소\s?승인|매출\s?취소)/i;
   // 환불·결제취소: 이전 지출을 되돌리는 알림 (단순 입금과 구분)
-  const REFUND = /(refund|reversal|reversed|cancell?ed|cancellation|\bvoid(ed)?\b|환불|(?:승인|결제|구매|주문|거래|매출)[가이]?\s?취소|취소\s?(?:승인|완료|처리))/i;
+  const REFUND = /(refund|reversal|reversed|cancell?ed|cancellation|\bvoid(ed)?\b|환불|(?:승인|결제|구매|주문|거래|매출|출금)[가이]?\s?취소|취소\s?(?:승인|완료|처리))/i;
   // 취소 '수수료'는 환불이 아니라 지출
   const NOT_REFUND = /(cancell?ation fee|cancel fee|no[- ]show fee|취소\s?수수료|위약금)/i;
   const EXPENSE = /(spent|paid|payment|purchase|transaction|\btxn\b|charged|debited|\bdebit\b|was used|used at|card ending|you sent|sent \S+ to|transferred|transfer of|paynow|승인|결제|사용|출금|이체|일시불|할부|체크카드|신용카드)/i;
@@ -53,6 +53,8 @@
     new RegExp('\\b(?:paid|sent|transfer(?:red)?(?:\\s+of)?|payment(?:\\s+of)?)\\s+(?:\\S+\\s+)?to\\s+([^\\n]+?)' + STOP_EN, 'gi'),
     new RegExp('\\bto\\s+([^\\n]+?)' + STOP_EN, 'gi'),
     new RegExp('\\bfrom\\s+([^\\n]+?)' + STOP_EN, 'gi'),
+    // 계좌 입출금 (KB스타뱅킹 등): 11/18 09:59 123456**789 카카오_택 체크카드출금 8,000 잔액…
+    new RegExp('\\d+\\*+\\d+\\s+(.+?)\\s+\\S*(?:출금|입금|이체)(?:\\s?취소)?\\s+[\\d,]+', 'g'),
     // 11/17 12:34 스타벅스 누적…
     new RegExp('\\d{1,2}[\\/.-]\\d{1,2}\\s+\\d{1,2}:\\d{2}\\s+([^\\n]+?)' + STOP_KO, 'g'),
     // 12,000원 일시불 스타벅스
@@ -127,7 +129,7 @@
   const KEYWORDS = [
     ['food', /grab\s?food|foodpanda|deliveroo|mcdonald|kfc|burger|subway|kopitiam|koufu|food ?(court|republic)|restaurant|hawker|bistro|kitchen|식당|배달의민족|배민|요기요|쿠팡이츠|김밥|치킨|분식|맥도날드|버거/i],
     ['cafe', /starbucks|coffee|cafe|café|toast ?box|ya ?kun|luckin|bubble ?tea|boba|bakery|스타벅스|커피|카페|이디야|투썸|메가커피|빽다방|컴포즈|베이커리|파리바게뜨|뚜레쥬르/i],
-    ['transport', /\bgrab\b(?!\s?(food|mart|pay))|gojek|tada|comfort|\bcdg\b|taxi|transit ?link|simply ?go|\bbus\b|\bmrt\b|ez-?link|카카오\s?t|택시|버스|지하철|코레일|ktx|srt|티머니|주유|\bshell\b|esso|caltex|\bspc\b|parking|주차/i],
+    ['transport', /\bgrab\b(?!\s?(food|mart|pay))|gojek|tada|comfort|\bcdg\b|taxi|transit ?link|simply ?go|\bbus\b|\bmrt\b|ez-?link|카카오[\s_]?(?:t|택)|택시|버스|지하철|코레일|ktx|srt|티머니|주유|\bshell\b|esso|caltex|\bspc\b|parking|주차/i],
     ['living', /ntuc|fair ?price|cold storage|giant|sheng siong|don ?don ?donki|daiso|7-?eleven|cheers|grab ?mart|redmart|이마트|홈플러스|롯데마트|다이소|gs25|\bcu\b|세븐일레븐|편의점|마트/i],
     ['shopping', /shopee|lazada|amazon|taobao|uniqlo|zara|h&m|ikea|qoo10|쿠팡|무신사|11번가|지마켓|g마켓|올리브영|에이블리|지그재그/i],
     ['phone', /singtel|starhub|\bm1\b|circles|giga|simba|\bskt\b|\bkt\b|lg ?u\+|알뜰폰|통신/i],

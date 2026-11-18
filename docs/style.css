@@ -476,3 +476,10 @@ textarea.input.area { height: auto; min-height: 120px; padding: 12px 14px; resiz
 .rate-status { margin: 4px 4px 10px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
 .steps code, .hint code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; background: var(--card-2); padding: 1px 6px; border-radius: 6px; word-break: break-all; }
 .steps small { font-size: 12.5px; }
+details.usb { margin-top: 14px; background: var(--card-2); border-radius: 12px; padding: 10px 12px; }
+details.usb summary { font-size: 14px; font-weight: 600; cursor: pointer; list-style: none; display: flex; justify-content: space-between; }
+details.usb summary::-webkit-details-marker { display: none; }
+details.usb summary::after { content: '▾'; color: var(--ink-2); }
+details.usb[open] summary::after { content: '▴'; }
+details.usb .steps { font-size: 14px; }
+.btn[disabled] { opacity: 0.55; }

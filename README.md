@@ -4,7 +4,8 @@
 
 | | 웹앱 (PWA) | 안드로이드 앱 (APK) |
 |---|---|---|
-| 설치 | Chrome에서 https://khseong0418-star.github.io/gagyebu/ → 앱 설치 | PC에서 USB로 설치 (아래 참고) |
+| 설치 | Chrome에서 https://khseong0418-star.github.io/gagyebu/ → 앱 설치 | 처음 한 번 PC에서 USB로 설치 (아래 참고) |
+| 업데이트 | 자동 (다음 실행 때) | 폰에서 바로 (앱 안에서 자동, 앱 본체가 바뀔 때만 USB) |
 | **결제 알림 자동 기록** | ✗ (웹은 다른 앱 알림을 못 읽음) | ✅ |
 | 데이터 위치 | 폰의 Chrome 저장소 | 앱 저장소 |
 
@@ -22,29 +23,37 @@
 
 ## 결제 알림 자동 기록 (APK)
 은행·카드·결제 앱의 알림과 은행 문자를 읽어 금액·가맹점을 찾아 자동으로 기록합니다.
-- 인식 대상 예: OCBC·UOB·Citi 카드/PayNow 알림·문자, Grab·YouTrip·Trust, KB·신한·삼성·현대카드 승인 문자, 토스, 카카오톡 알림톡
-- 환불·결제취소: 지출에서 빠지는 항목으로 기록 (원래 결제와 같은 카테고리, 목록에 +금액으로 표시). 결제 직후 취소도 중복으로 지우지 않음
+- 인식 대상 예: OCBC·UOB·Citi 카드/PayNow 알림·문자, Grab·YouTrip·Trust, KB·신한·삼성·현대카드 승인 문자, KB스타뱅킹 계좌 입출금 알림(체크카드출금), 토스, 카카오톡 알림톡
+- 환불·결제취소(출금취소 포함): 지출에서 빠지는 항목으로 기록 (원래 결제와 같은 카테고리, 목록에 +금액으로 표시). 결제 직후 취소도 중복으로 지우지 않음. 가맹점 없이 온 취소는 3일 안의 같은 금액 결제를 찾아 가맹점·카테고리·환율을 맞춤 (카카오T 택시의 '선결제 → 취소 → 실제 요금' 같은 경우)
 - 무시: 단순 입금(급여·이체 받음), OTP·인증번호, 결제 실패/거절, 결제 예정·청구 안내, 광고, 채팅 (금액이 없으면 아예 저장 안 함)
 - 카테고리: 같은 가맹점의 이전 기록을 따라가고, 처음 보는 곳은 이름(GrabFood→식비, NTUC→생활용품 등)으로 추정, 모르면 '기타'
 - 다른 통화: 알림에 SGD 금액이 같이 있으면(YouTrip 등) 그 금액 사용, 없으면 자동 환율로 환산. 아직 환율을 못 받았으면 **확인 필요**에 모았다가 환율을 받는 즉시 자동 기록. SGD·KRW·USD 외 통화(엔화 등)는 **확인 필요**에서 금액을 직접 입력
 - 시간: 알림이 온 시각으로 기록
 - 중복: 같은 결제가 문자와 앱 알림으로 두 번 와도 10분 안 같은 금액·가맹점이면 한 번만 기록
 - 설정 → 결제 알림 자동 기록 → **인식 기록**에서 모든 처리 결과 확인, 엉뚱한 앱은 '이 앱 무시'
+- 인식 규칙이 업데이트되면 인식 기록의 **지금 규칙으로 다시 인식**으로 예전 알림에도 적용 (무시했던 결제·취소는 새로 기록, 자동 기록의 가맹점·카테고리는 직접 고치지 않은 것만 바로잡음)
+- 가맹점을 못 찾아 앱 이름으로 적은 기록은 카테고리 학습에 쓰지 않음 (은행 앱 알림이 한 카테고리로 몰리지 않게)
 - 설정 → **알림 문구 테스트**에 실제 알림 문구를 붙여 넣으면 어떻게 기록될지 미리 볼 수 있음 (웹앱에서도 가능)
 
-### APK 설치·업데이트 (PC에서 USB로)
+### APK 설치 (PC에서 USB로)
 싱가포르에서는 구글 정책 때문에 폰에서 직접 내려받은 APK 설치가 막힙니다
 (Play 프로텍트가 알림 읽기 앱을 차단하고, 2026년 9월 말부터 미등록 개발자 앱도 차단). USB 디버깅(adb) 설치는 예외입니다.
 
 1. 폰: 설정 → 휴대전화 정보 → 소프트웨어 정보 → **빌드번호** 7번 → 개발자 옵션 → **USB 디버깅** 켜기
 2. 폰: 설정 → 보안 및 개인정보 보호 → **자동 차단**이 켜져 있으면 잠시 끄기 (USB 명령도 막음)
 3. USB로 PC 연결 → 폰의 **USB 디버깅 허용** 누르기
-4. PC: `%USERPROFILE%android-devsdkplatform-toolsadb.exe install -r docs/gagyebu.apk`
+4. PC: `%USERPROFILE%\android-dev\sdk\platform-tools\adb.exe install -r docs/gagyebu.apk`
 5. 앱을 열면 **알림 접근 권한** 안내 → **알림 접근 설정 열기** → 가계부 켜기 (USB로 설치하면 '제한된 설정'이 걸리지 않음)
 6. 처음이면 기존 웹앱 기록 옮기기: 웹앱 설정 → **백업 파일 저장** → APK 설정 → **백업에서 복원**
 7. 끝나면 자동 차단은 다시 켜고, USB 디버깅은 꺼도 됨
 
-업데이트도 같은 방법으로 덮어쓰기 설치합니다 (같은 서명이라 기록은 그대로). 앱 설정 → **앱 업데이트 방법**에서 새 버전이 있는지 확인할 수 있습니다.
+### 폰에서 바로 업데이트 (v1.4.0부터)
+APK를 다시 설치하지 않고, 앱이 화면 코드(`docs/`의 html·js·css — 화면, 알림 인식, 카테고리 등 거의 전부)만 GitHub Pages에서 받아 바꿔 끼웁니다.
+- 앱을 열 때(그리고 30분 넘게 지나 다시 돌아올 때) 새 버전을 확인해 받아 두고, **지금 적용**을 누르거나 다음에 앱으로 돌아올 때 적용 (기록은 그대로)
+- 설정 → **앱 업데이트**에서 직접 확인·적용, 받은 업데이트를 지우고 처음 설치한 버전으로 되돌리기도 가능
+- `android/ota-key.pem`으로 서명된 묶음만 받아들임 (앱 안의 공개키로 확인). GitHub 계정이 털려도 서명 없는 코드는 들어오지 않음
+- 새 버전이 정상적으로 시작하지 못하면(15초 안에 시작 신호가 없으면) 자동으로 이전 버전으로 되돌아가고 그 버전은 건너뜀
+- 앱 본체(Java)를 바꿔야 하는 업데이트만 위의 USB 설치가 필요 (앱이 "PC 연결(USB) 설치가 필요해요"라고 알려 줌). 같은 서명이라 덮어쓰기 설치되고 기록은 그대로
 
 ## 개발
 
@@ -52,7 +61,10 @@
 ```bash
 node serve.js
 ```
-http://localhost:5180 에서 확인. `docs/` 수정 후 `docs/sw.js`의 `CACHE` 버전을 올리고 커밋·push 하면 1~2분 뒤 Pages에 반영됩니다.
+http://localhost:5180 에서 확인. 고친 뒤 배포:
+1. `docs/app.js`의 `APP_VERSION`과 `docs/sw.js`의 `CACHE` 버전을 올림
+2. `node tools/make-ota.js` → `docs/ota/`에 서명된 업데이트 묶음 생성 (안드로이드 앱의 폰 업데이트용)
+3. 커밋·push 하면 1~2분 뒤 Pages에 반영 → 웹앱은 다음 실행 때, 안드로이드 앱은 다음에 열 때 받아서 적용
 
 알림 분석기 테스트:
 ```bash
@@ -67,7 +79,8 @@ WebView로 `docs/`를 그대로 띄우고(빌드 시 APK 안에 복사), 알림 
 ```bash
 cd android && JAVA_HOME="$USERPROFILE/android-dev/jdk" ./gradlew.bat assembleRelease && cp "$USERPROFILE/android-dev/build/gagyebu/app/outputs/apk/release/app-release.apk" ../docs/gagyebu.apk
 ```
-- 버전을 올릴 때 `android/app/build.gradle`의 `versionCode`(+1)·`versionName`과 `docs/app.js`의 `APP_VERSION`을 함께 바꾸세요.
+- 앱 본체를 바꿀 때는 `android/app/build.gradle`의 `versionCode`(+1)·`versionName`과 `docs/app.js`의 `APP_VERSION`을 함께 올리고, 새 화면 코드가 새 본체 기능을 꼭 써야 하면 `docs/app.js`의 `MIN_NATIVE`를 새 `versionCode`로 올리세요 (옛 본체에는 USB 설치 안내가 뜸). 새 본체 기능은 `nativeCall()`로 불러 옛 본체에서도 깨지지 않게 하세요.
+- **폰 업데이트 서명 키 `android/ota-key.pem`도 git에 올리지 않습니다 (OneDrive에만 보관).** 잃으면 새 키(`node tools/make-ota.js --keygen`)를 `Ota.java`에 넣은 APK를 USB로 한 번 다시 설치해야 합니다.
 - **서명 키 `android/release.jks`와 `android/keystore.properties`는 git에 올리지 않습니다 (OneDrive에만 보관).** 이 키를 잃으면 업데이트를 덮어쓰기 설치할 수 없어 앱을 지우고(백업 후) 다시 설치해야 합니다.
 
 ## 파일 구조
@@ -81,8 +94,10 @@ docs/                 ← GitHub Pages로 공개되는 앱 (+ APK 안에도 그�
   manifest.webmanifest 설치 정보
   icons/              앱 아이콘
   gagyebu.apk         안드로이드 앱
+  ota/                폰에서 바로 받는 업데이트 묶음 (tools/make-ota.js가 만듦)
 android/              안드로이드 앱 (WebView + 알림 리스너, Java)
 serve.js              로컬 테스트 서버
 tools/make-icons.js   아이콘 생성기 (웹·안드로이드)
 tools/test-notif.js   알림 분석기 테스트
+tools/make-ota.js     폰 업데이트 묶음 만들기·서명
 ```

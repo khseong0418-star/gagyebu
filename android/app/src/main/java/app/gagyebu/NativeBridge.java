@@ -110,6 +110,43 @@ public class NativeBridge {
         }
     }
 
+    /* ---------- 바로 업데이트 (Ota) ---------- */
+
+    /** {builtIn, served, active, ready, bad, nativeCode} */
+    @JavascriptInterface
+    public String otaStatus() {
+        return Ota.status(act, act.webVer);
+    }
+
+    /** 새 버전 확인·내려받기. 결과는 window.__gagyebuOta(json) 으로 */
+    @JavascriptInterface
+    public void otaCheck() {
+        Ota.check(act, act.webVer, json -> act.runOnUiThread(() -> act.sendOta(json)));
+    }
+
+    /** 받아 둔 새 버전을 지금 적용 (화면을 다시 엶) */
+    @JavascriptInterface
+    public boolean otaApply() {
+        String v = Ota.applyReady(act);
+        if (v == null) return false;
+        act.runOnUiThread(() -> act.loadWeb(v));
+        return true;
+    }
+
+    /** 화면 코드가 정상 시작됨 (jsVersion = 화면 코드의 APP_VERSION). 반환값: 직전에 실패해 되돌린 버전 */
+    @JavascriptInterface
+    public String otaOk(String jsVersion) {
+        String served = act.webVer;
+        return Ota.confirm(act, !served.isEmpty() && served.equals(jsVersion) ? served : "");
+    }
+
+    /** 받은 업데이트를 지우고 APK 안의 기본 코드로 되돌림 */
+    @JavascriptInterface
+    public void otaReset() {
+        Ota.reset(act, act.webVer);
+        act.runOnUiThread(() -> act.loadWeb(""));
+    }
+
     @JavascriptInterface
     public String version() {
         try {

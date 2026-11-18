@@ -68,6 +68,18 @@ const cases = [
     want: { type: 'income', refund: true, amount: 45, currency: 'SGD', merchant: 'NETFLIX.COM', cat: 'leisure' } },
   { app: 'Grab', title: 'Order cancelled', text: 'Your GrabFood order from Hawker Chan was cancelled. S$8.90 has been refunded to your GrabPay Wallet.',
     want: { type: 'income', refund: true, amount: 8.9, currency: 'SGD', merchant: 'Hawker Chan', cat: 'food' } },
+  // ---- KB스타뱅킹 계좌 입출금 알림 (가맹점 이름이 잘려서 옴) ----
+  { app: 'KB Star Banking', title: '출금 8,000원', text: '홍*동님 11/18 09:59 123456**789 카카오_택 체크카드출금 8,000 잔액1,234,567',
+    want: { type: 'expense', refund: false, amount: 8000, currency: 'KRW', merchant: '카카오_택', cat: 'transport' } },
+  { app: 'KB Star Banking', title: '출금 9,400원', text: '홍*동님 11/18 12:15 123456**789 카카오T일 체크카드출금 9,400 잔액1,225,167',
+    want: { type: 'expense', amount: 9400, currency: 'KRW', merchant: '카카오T일', cat: 'transport' } },
+  { app: 'KB Star Banking', title: '출금 120,000원', text: '홍*동님 11/18 11:54 123456**789 연세튼튼치 체크카드출금 120,000 잔액1,105,167',
+    want: { type: 'expense', amount: 120000, currency: 'KRW', merchant: '연세튼튼치' } },
+  // 출금취소 = 결제 취소 (가맹점 이름 없이 옴 → 앱에서 같은 금액의 직전 결제를 찾아 맞춤)
+  { app: 'KB Star Banking', title: '입금 8,900원', text: '홍*동님 11/18 11:57 123456**789 출금취소 8,900 잔액1,114,067',
+    want: { type: 'income', refund: true, amount: 8900, currency: 'KRW', merchant: '' } },
+  { app: 'KB Star Banking', title: '입금 50,000원', text: '홍*동님 11/18 13:00 123456**789 김철수 입금 50,000 잔액1,164,067',
+    want: { type: 'income', refund: false, amount: 50000, currency: 'KRW' } },
   // 취소 '수수료'는 환불이 아니라 지출
   { app: 'Grab', title: 'Booking cancelled', text: 'A cancellation fee of S$4.00 has been charged to your card ending 1234.',
     want: { type: 'expense', refund: false, amount: 4, currency: 'SGD' } },
@@ -96,7 +108,7 @@ for (const c of cases) {
     if ('refund' in w && p.refund !== w.refund) errs.push(`refund ${p.refund} ≠ ${w.refund}`);
     if (p.amount !== w.amount) errs.push(`amount ${p.amount} ≠ ${w.amount}`);
     if ('currency' in w && p.currency !== w.currency) errs.push(`currency ${p.currency} ≠ ${w.currency}`);
-    if (w.merchant && p.merchant !== w.merchant) errs.push(`merchant "${p.merchant}" ≠ "${w.merchant}"`);
+    if ('merchant' in w && p.merchant !== w.merchant) errs.push(`merchant "${p.merchant}" ≠ "${w.merchant}"`);
     if (w.alt && !p.amounts.some(a => a.currency === w.alt.currency && a.amount === w.alt.amount)) errs.push(`대체 금액 ${w.alt.currency} ${w.alt.amount} 없음`);
     if (w.cat) {
       // 환불은 원래 지출과 같은 카테고리로 추정

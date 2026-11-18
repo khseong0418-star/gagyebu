@@ -1,0 +1,8 @@
+{
+  "version": "1.4.1",
+  "minNative": 6,
+  "bundle": "bundle-1.4.1.json",
+  "size": 206619,
+  "sha256": "99b1ee3361265c5bac39ce8e514d9c13952d0fd2e3c3797933b83404e94e62b1",
+  "sig": "MEYCIQCkmliizdOQyxYoltnzejT6rIlvLOy0qXHAaOTW0PizCQIhAO6JMR1IutFe9ZfJsgx3hJqaA5Wa37m5LqzNTY2z6gCk"
+}

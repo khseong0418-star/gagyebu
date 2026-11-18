@@ -1,6 +1,8 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.4.1';
+/** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
+const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
 /** 안드로이드 앱(APK) 안에서 실행될 때만 존재하는 네이티브 연결 */
 const NATIVE = window.GagyebuNative || null;
@@ -214,6 +216,8 @@ function migrate(d) {
       .map(l => ({
         id: str(l.id || uid(), 40), time: num(l.time), app: str(l.app, 40), pkg: str(l.pkg, 120), text: str(l.text, 400),
         status: str(l.status, 10), note: str(l.note, 80), txId: l.txId ? str(l.txId, 40) : undefined,
+        memo: l.memo ? str(l.memo, 60) : undefined, autoCat: l.autoCat ? str(l.autoCat, 40) : undefined,
+        src: l.src && typeof l.src === 'object' ? { title: str(l.src.title, 200), text: str(l.src.text, 400) } : undefined,
       })),
     categories: { expense: seedCats(cats('expense'), num(ds.catSeed)), income: cats('income') },
     methods: Array.isArray(d.methods) ? d.methods.map(m => String(m).slice(0, 20)).filter(Boolean) : base.methods,
@@ -601,7 +605,7 @@ function viewSettings() {
       ${setRow('inbox', '📥', '확인 필요한 알림', `${S.inbox.length}건`)}
       ${setRow('notifLog', '📜', '인식 기록', `${S.notifLog.length}건`)}
       ${setRow('notifTest', '🧪', '알림 문구 테스트')}
-      ${setRow('appUpdate', '⬆️', '앱 업데이트 방법', `v${APP_VERSION}`)}
+      ${hasOta() ? setRow('appUpdate', '⬆️', '앱 업데이트', otaLabel()) : setRow('appUpdate', '⬆️', '앱 업데이트 방법', `v${APP_VERSION}`)}
     </div><p class="hint">은행·카드·결제 앱의 알림과 문자에서 금액·가맹점을 읽어 자동으로 기록해요. 카테고리는 같은 가맹점의 이전 기록을 따라가요. 알림 내용은 이 폰 밖으로 나가지 않아요.</p></section>`;
   } else {
     notif = `<section><h3 class="sec-title">결제 알림 자동 기록</h3><div class="card list">
@@ -1275,7 +1279,23 @@ function guessMethod(app) {
 }
 
 /** 알림 하나를 어떻게 처리할지 결정합니다 (데이터는 바꾸지 않음). */
-function analyzeNotif(n) {
+/** 내역의 시각(ms): 자동 기록은 알림 시각, 직접 입력은 날짜+시간 */
+function txTs(t) {
+  if (t.auto && t.created) return t.created;
+  const d = parseYmd(t.date);
+  if (validHM(t.time)) d.setHours(+t.time.slice(0, 2), +t.time.slice(3));
+  return d.getTime();
+}
+/** 가맹점 없이 온 취소 알림(예: KB '출금취소')의 원래 결제: 3일 안의 같은 금액 지출 중 가장 최근 것 (이미 취소된 건 제외) */
+function findOriginalPay(hit, time, skipId) {
+  const base = S.settings.currency;
+  const same = t => (t.ocur ? t.ocur === hit.currency && Math.abs(t.oamt - hit.amount) < 0.005
+    : (hit.currency === base || !hit.currency) && Math.abs(t.amount - hit.amount) < 0.005);
+  const exp = S.tx.filter(t => t.type === 'expense' && t.id !== skipId && same(t));
+  const cands = exp.filter(t => !t.refund && txTs(t) <= time + 2 * 60e3 && txTs(t) > time - 3 * 864e5).sort((a, b) => txTs(b) - txTs(a));
+  return cands.find(o => !exp.some(r => r.refund && NP.normKey(r.memo) === NP.normKey(o.memo) && txTs(r) >= txTs(o))) || null;
+}
+function analyzeNotif(n, { skipId } = {}) {
   const time = Number(n.time) || Date.now();
   const app = String(n.app || n.pkg || '알림').slice(0, 40);
   if (!S.settings.autoNotif) return { status: 'off', note: '자동 기록이 꺼져 있음' };
@@ -1294,15 +1314,24 @@ function analyzeNotif(n) {
     amount = Math.max(toBase(hit.amount, hit.currency), 1 / 10 ** cur().dec);
     orig = { ocur: hit.currency, oamt: hit.amount, orate: rateOf(hit.currency) };
   }
-  const memo = p.merchant || app;
+  // 가맹점 없는 취소는 원래 결제의 가맹점·카테고리를 따름
+  const orig0 = refund && !p.merchant ? findOriginalPay(hit, time, skipId) : null;
+  if (orig0 && orig0.ocur && orig0.ocur === hit.currency) {
+    // 전액 취소: 결제 때 환율 그대로 되돌려 합계가 정확히 0이 되게
+    amount = orig0.amount;
+    orig = { ocur: orig0.ocur, oamt: orig0.oamt, orate: orig0.orate };
+  }
+  const memo = p.merchant || (orig0 && orig0.memo) || app;
   const key = NP.normKey(memo);
   const near = t0 => Math.abs(t0 - time) < 10 * 60 * 1000;
   // 결제 직후 취소가 오는 경우가 있으므로 환불 여부까지 같아야 중복으로 봄
   const dup =
-    S.tx.some(t => t.auto && t.type === 'expense' && !!t.refund === !!refund && amount !== null && Math.abs(t.amount - amount) < 0.005 && NP.normKey(t.memo) === key && near(t.created || 0)) ||
+    S.tx.some(t => t.id !== skipId && t.auto && t.type === 'expense' && !!t.refund === !!refund && amount !== null && Math.abs(t.amount - amount) < 0.005 && NP.normKey(t.memo) === key && near(t.created || 0)) ||
     S.inbox.some(i => !!i.refund === !!refund && i.amountOrig === hit.amount && NP.normKey(i.memo) === key && near(i.time));
   if (dup) return { status: 'dup', note: '같은 결제가 이미 기록됨 (문자·앱 알림 중복 등)' };
-  const cat = NP.guessCategory(memo, 'expense', expTx().sort(sortTx), S.categories.expense, `${n.title || ''} ${n.text || ''}`);
+  // 가맹점을 못 찾아 앱 이름으로 적은 기록끼리는 카테고리를 따라가지 않음 (은행 앱 알림이 모두 한 카테고리로 몰리지 않게)
+  const cat = orig0 && S.categories.expense.some(c => c.id === orig0.cat) ? orig0.cat
+    : NP.guessCategory(memo, 'expense', p.merchant ? expTx().filter(t => t.id !== skipId).sort(sortTx) : [], S.categories.expense, `${n.title || ''} ${n.text || ''}`);
   const info = { type: 'expense', refund, memo, merchantFound: !!p.merchant, date: ymd(new Date(time)), cat, time, app, hit, amount, orig, method: guessMethod(app) };
   if (amount === null) return { status: 'review', note: hit.currency ? `${hit.currency} 환율이 없어 확인 필요` : '통화를 알 수 없어 확인 필요', ...info };
   return { status: 'saved', note: '', ...info };
@@ -1313,22 +1342,74 @@ function processNotif(n) {
   const a = analyzeNotif(n);
   const entry = {
     id: uid(), time: Number(n.time) || Date.now(), app: String(n.app || n.pkg || '').slice(0, 40), pkg: String(n.pkg || ''),
-    text: [n.title, n.text].filter(Boolean).join(' · ').slice(0, 400), status: a.status, note: a.note,
+    text: [n.title, n.text].filter(Boolean).join(' · ').slice(0, 400),
+    // 다시 인식할 때 쓰는 원문 (제목·본문 따로)
+    src: { title: String(n.title || '').slice(0, 200), text: String(n.text || '').slice(0, 400) },
   };
+  applyNotif(a, entry);
+  S.notifLog.unshift(entry);
+  if (S.notifLog.length > 100) S.notifLog.length = 100;
+  return entry;
+}
+/** 분석 결과로 내역(또는 확인 필요)을 만들고 인식 기록 항목을 채움 */
+function applyNotif(a, entry) {
+  Object.assign(entry, { status: a.status, note: a.note });
+  delete entry.txId;
   if (a.status === 'saved') {
     const tx = { id: uid(), type: a.type, amount: a.amount, cat: a.cat, date: a.date, time: hmOf(a.time), memo: a.memo, method: a.method, created: a.time, auto: 1 };
     if (a.orig && CUR[a.orig.ocur]) Object.assign(tx, a.orig);
     if (a.refund) tx.refund = 1;
     S.tx.push(tx);
     entry.txId = tx.id;
+    entry.memo = a.memo;
+    entry.autoCat = a.cat;
     entry.note = `${catOf(tx).name} · ${a.refund ? `환불 +${money(a.amount)}` : money(a.amount)}`;
   } else if (a.status === 'review') {
     S.inbox.unshift({ id: uid(), time: a.time, type: a.type, cat: a.cat, memo: a.memo, date: a.date, currency: a.hit.currency || '?', amountOrig: a.hit.amount, app: a.app, refund: a.refund || undefined });
     if (S.inbox.length > 50) S.inbox.length = 50;
   }
-  S.notifLog.unshift(entry);
-  if (S.notifLog.length > 100) S.notifLog.length = 100;
-  return entry;
+}
+/** 인식 기록의 원문 (예전 기록은 '제목 · 본문'을 나눔) */
+function logSource(e) {
+  if (e.src) return e.src;
+  const i = (e.text || '').indexOf(' · ');
+  return i > 0 ? { title: e.text.slice(0, i), text: e.text.slice(i + 3) } : { title: '', text: e.text || '' };
+}
+/**
+ * 지금 규칙으로 인식 기록을 다시 처리 (오래된 것부터).
+ * - 무시했던 알림이 이제 결제·취소로 보이면 새로 기록
+ * - 자동 기록한 내역은 사용자가 고치지 않은 가맹점(메모)·카테고리만 바로잡음 (금액·날짜는 그대로)
+ */
+function reprocessLog() {
+  let fixed = 0, added = 0;
+  for (const e of [...S.notifLog].reverse()) {
+    const n = { ...logSource(e), app: e.app, pkg: e.pkg, time: e.time };
+    if (e.status === 'ignored') {
+      const a = analyzeNotif(n);
+      if (a.status !== 'saved' && a.status !== 'review') continue;
+      applyNotif(a, e);
+      added++;
+    } else if (e.status === 'saved') {
+      const tx = e.txId && S.tx.find(t => t.id === e.txId);
+      if (!tx || !tx.auto) continue;
+      const a = analyzeNotif(n, { skipId: tx.id });
+      if (a.status !== 'saved' || !!a.refund !== !!tx.refund) continue;
+      // 앱이 자동으로 적은 값 (예전 기록은 메모 = 앱 이름, 카테고리 = 인식 기록 문구 앞부분)
+      const autoMemo = e.memo || e.app;
+      const autoCat = e.autoCat || (S.categories.expense.find(c => c.name === (e.note || '').split(' · ')[0]) || {}).id || '';
+      let changed = false;
+      // 사용자가 고치지 않고 자동으로 적은 값 그대로일 때만 바꿈
+      if (tx.memo === autoMemo && a.memo !== tx.memo) { tx.memo = a.memo; changed = true; }
+      if (autoCat && tx.cat === autoCat && a.cat !== tx.cat) { tx.cat = a.cat; changed = true; }
+      e.memo = tx.memo === a.memo ? a.memo : autoMemo;
+      e.autoCat = tx.cat === a.cat ? a.cat : autoCat;
+      if (changed) {
+        e.note = `${catOf(tx).name} · ${tx.refund ? `환불 +${money(tx.amount)}` : money(tx.amount)}`;
+        fixed++;
+      }
+    }
+  }
+  return { fixed, added };
 }
 
 /** 안드로이드 쪽에 쌓인 알림을 가져와 처리 (앱을 열거나 알림이 올 때 호출) */
@@ -1403,7 +1484,8 @@ function openNotifLog() {
       if (!S.notifLog.length) {
         return `<p class="empty-sm">아직 인식한 알림이 없어요.<br>${NATIVE ? '금액이 들어 있는 알림이 오면 여기에 표시돼요.' : '안드로이드 앱에서 동작해요.'}</p>`;
       }
-      return '<p class="hint">금액이 들어 있는 알림만 최근 100건까지 보여요. 결제와 상관없는 앱은 ‘이 앱 무시’로 막을 수 있어요.</p>' +
+      return '<p class="hint">금액이 들어 있는 알림만 최근 100건까지 보여요. 결제와 상관없는 앱은 ‘이 앱 무시’로 막을 수 있어요. 앱이 업데이트되어 인식 규칙이 바뀌면 ‘다시 인식’으로 예전 알림에도 적용할 수 있어요 (직접 고친 내역은 그대로 둬요).</p>' +
+        '<button class="btn block" data-x="redo">🔄 지금 규칙으로 다시 인식</button>' +
         S.notifLog.map(l => {
           const [label, cls] = NOTIF_STATUS[l.status] || [l.status, 'mute'];
           const blocked = l.pkg && S.settings.notifBlock.includes(l.pkg);
@@ -1429,6 +1511,10 @@ function openNotifLog() {
         } else if (b.dataset.x === 'clear') {
           S.notifLog = [];
           commit();
+        } else if (b.dataset.x === 'redo') {
+          const { fixed, added } = reprocessLog();
+          if (fixed || added) commit();
+          toast(fixed || added ? [added && `새로 기록 ${added}건`, fixed && `고침 ${fixed}건`].filter(Boolean).join(' · ') : '바뀐 내용이 없어요');
         }
       });
     },
@@ -1593,14 +1679,61 @@ function openNotifTest() {
   });
 }
 
-/* ---------- 앱 설치·업데이트 안내 ---------- */
-// 싱가포르에서는 구글 정책(개발자 인증·Play 프로텍트)으로 폰에서 받은 APK 설치가 막혀 PC에서 USB로 설치
+/* ---------- 앱 업데이트 ---------- */
+// 안드로이드 앱: 화면 코드(이 파일들)는 폰에서 바로 업데이트해요. 서명을 확인한 새 코드로 바꿔 끼움 (Ota.java).
+// 앱 본체(APK)가 바뀔 때만 PC에서 USB로 설치 (싱가포르는 구글 정책으로 폰에서 받은 APK 설치가 막힘).
 const cmpVer = (a, b) => {
   const pa = a.split('.').map(Number), pb = b.split('.').map(Number);
   for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
   return 0;
 };
-/** 공개 사이트의 최신 버전 번호 확인 (내 GitHub Pages 주소만 요청) */
+const hasOta = () => !!NATIVE && typeof NATIVE.otaCheck === 'function';
+const OTA_GAP = 30 * 60 * 1000; // 앱으로 돌아올 때 다시 확인하는 간격
+const OTA = { state: '', latest: '', at: 0, told: '', usbOpen: false };
+function checkOta(force = false) {
+  if (!hasOta() || OTA.state === 'checking') return;
+  if (!force && Date.now() - OTA.at < OTA_GAP) return;
+  OTA.at = Date.now();
+  OTA.state = 'checking';
+  refreshOta();
+  nativeCall('otaCheck', null);
+}
+/** Ota.java 가 확인을 마치면 부름: {state: latest|ready|native|bad|error, latest} */
+window.__gagyebuOta = json => {
+  let r = {};
+  try { r = JSON.parse(json) || {}; } catch {}
+  OTA.state = r.state || 'error';
+  OTA.latest = r.latest || '';
+  if (OTA.state === 'ready' && OTA.told !== OTA.latest) {
+    OTA.told = OTA.latest;
+    if (!sheets.some(s => s.ota)) toast(`새 버전 v${OTA.latest}을 받았어요`, { label: '지금 적용', fn: applyOta });
+  }
+  refreshOta();
+};
+function refreshOta() {
+  if (UI.tab === 'settings') render();
+  for (const s of sheets) if (s.ota) s.refresh();
+}
+function applyOta() {
+  save();
+  if (nativeCall('otaApply', false)) return; // 화면이 새 버전으로 다시 열림
+  OTA.state = '';
+  toast('적용할 새 버전이 없어요. 다시 확인해 주세요.');
+  refreshOta();
+}
+const otaLabel = () => (OTA.state === 'ready' ? '새 버전 받음' : `v${APP_VERSION}`);
+
+function usbSteps() {
+  return `<ol class="steps">
+        <li>폰: 설정 → 개발자 옵션 → <b>USB 디버깅</b> 켜기<br><small class="muted">개발자 옵션이 없으면 휴대전화 정보 → 소프트웨어 정보 → 빌드번호를 7번 누르기</small></li>
+        <li>폰: 설정 → 보안 및 개인정보 보호 → <b>자동 차단</b>이 켜져 있으면 잠시 끄기</li>
+        <li>USB 케이블로 PC에 연결 → 폰에 뜨는 <b>USB 디버깅 허용</b> 누르기</li>
+        <li>PC에서 APK를 받아 설치: <code>adb install -r gagyebu.apk</code></li>
+        <li>설치가 끝나면 자동 차단은 다시 켜고, USB 디버깅은 꺼도 돼요</li>
+      </ol>
+      <p class="hint">APK 파일 (PC에서 받기): <code>${esc(APK_URL)}</code></p>`;
+}
+/** 공개 사이트의 최신 버전 번호 확인 (내 GitHub Pages 주소만 요청) — 바로 업데이트가 없는 옛 앱 본체용 */
 async function checkLatest(el) {
   try {
     const res = await fetch(APK_URL.replace('gagyebu.apk', 'app.js'), { cache: 'no-store' });
@@ -1615,24 +1748,62 @@ async function checkLatest(el) {
   }
 }
 function openUpdateGuide() {
+  if (hasOta()) return openOta();
   const native = !!NATIVE;
   openSheet({
     title: native ? '앱 업데이트' : '안드로이드 앱 설치',
     body: `${native ? `<p class="confirm-msg">사용 중인 버전 <b>v${APP_VERSION}</b><br><span id="up-latest" class="muted">최신 버전 확인 중…</span></p>` : ''}
       <p class="note">싱가포르에서는 구글 정책 때문에 폰에서 직접 내려받은 APK 설치가 막혀요. <b>PC에 USB로 연결해서 설치</b>해 주세요.${native ? ' 같은 서명이라 덮어쓰기 설치되고 기록은 그대로 남아요.' : ''}</p>
-      <ol class="steps">
-        <li>폰: 설정 → 개발자 옵션 → <b>USB 디버깅</b> 켜기<br><small class="muted">개발자 옵션이 없으면 휴대전화 정보 → 소프트웨어 정보 → 빌드번호를 7번 누르기</small></li>
-        <li>폰: 설정 → 보안 및 개인정보 보호 → <b>자동 차단</b>이 켜져 있으면 잠시 끄기</li>
-        <li>USB 케이블로 PC에 연결 → 폰에 뜨는 <b>USB 디버깅 허용</b> 누르기</li>
-        <li>PC에서 APK를 받아 설치: <code>adb install -r gagyebu.apk</code></li>
-        <li>설치가 끝나면 자동 차단은 다시 켜고, USB 디버깅은 꺼도 돼요</li>
-      </ol>
-      <p class="hint">APK 파일 (PC에서 받기): <code>${esc(APK_URL)}</code></p>
-      ${native ? '' : '<p class="hint">설치한 뒤 이 웹앱에서 <b>백업 파일 저장</b> → 앱에서 <b>백업에서 복원</b>으로 기록을 옮기세요.</p>'}`,
+      ${usbSteps()}
+      ${native ? '' : '<p class="hint">설치한 뒤 이 웹앱에서 <b>백업 파일 저장</b> → 앱에서 <b>백업에서 복원</b>으로 기록을 옮기세요. 그 뒤로는 앱 안에서 바로 업데이트돼요.</p>'}`,
     mount(w) {
       if (native) checkLatest($('#up-latest', w));
     },
   });
+}
+function openOta() {
+  const s = openSheet({
+    title: '앱 업데이트',
+    body: () => {
+      let st = {};
+      try { st = JSON.parse(nativeCall('otaStatus', '{}')) || {}; } catch {}
+      const v = esc(OTA.latest);
+      const [line, btn] = {
+        checking: ['⏳ 새 버전을 확인하는 중…', 'wait'],
+        latest: ['✅ 최신 버전이에요', 'check'],
+        ready: [`🎁 새 버전 <b>v${v}</b>을 받아 두었어요`, 'apply'],
+        native: [`새 버전 <b>v${v}</b>은 앱 본체도 바뀌어서 아래 <b>PC 연결(USB) 설치</b>가 필요해요`, 'check'],
+        bad: [`새 버전 v${v}은 건너뛰었어요 (제대로 열리지 않았거나 되돌린 버전). 다음 버전을 기다려 주세요.`, 'check'],
+        error: ['새 버전을 확인하지 못했어요 (인터넷 연결 확인)', 'check'],
+      }[OTA.state] || ['', 'check'];
+      const nat = nativeCall('version', '');
+      const label = { wait: '확인 중…', check: '업데이트 확인', apply: '지금 적용하기' }[btn];
+      return `<p class="confirm-msg">사용 중인 버전 <b>v${APP_VERSION}</b>${nat && nat !== APP_VERSION ? ` <small>(앱 본체 v${esc(nat)})</small>` : ''}${line ? `<br><span class="muted">${line}</span>` : ''}</p>
+        <button class="btn ${btn === 'apply' ? 'primary' : ''} block" data-u="${btn}" ${btn === 'wait' ? 'disabled' : ''}>${label}</button>
+        <p class="hint">화면, 알림 인식, 카테고리 같은 대부분의 변경은 여기서 바로 업데이트돼요. 앱을 열 때 자동으로 확인해서 받아 두고, 다음에 앱으로 돌아올 때 적용돼요. 기록은 그대로 남아요. 내 GitHub Pages에서 받은 파일 중 서명이 확인된 것만 써요.</p>
+        <details class="usb" ${OTA.usbOpen || OTA.state === 'native' ? 'open' : ''}><summary>PC 연결(USB)로 설치하기</summary>
+          <p class="hint">앱 본체가 바뀌는 업데이트에만 필요해요 (드물어요). 싱가포르에서는 폰에서 내려받은 APK 설치가 막혀 있어요.</p>
+          ${usbSteps()}
+        </details>
+        ${st.served ? `<button class="btn ghost danger-ink block" data-u="reset">처음 설치한 버전${st.builtIn ? ` v${esc(st.builtIn)}` : ''}으로 되돌리기</button>` : ''}`;
+    },
+    mount(w) {
+      w.addEventListener('toggle', e => { if (e.target.matches?.('details.usb')) OTA.usbOpen = e.target.open; }, true);
+      $('.sheet-body', w).addEventListener('click', async e => {
+        const b = e.target.closest('[data-u]');
+        if (!b) return;
+        const u = b.dataset.u;
+        if (u === 'check') checkOta(true);
+        else if (u === 'apply') applyOta();
+        else if (u === 'reset' && (await confirmBox('받은 업데이트를 지우고 처음 설치한 버전으로 되돌릴까요? 기록은 그대로 남아요.', { ok: '되돌리기', danger: true }))) {
+          save();
+          nativeCall('otaReset', null);
+        }
+      });
+      if (OTA.state !== 'ready') checkOta(true);
+    },
+  });
+  s.ota = true;
 }
 
 /* ================= 백업 / 복원 ================= */
@@ -1837,6 +2008,9 @@ window.addEventListener('appinstalled', () => { deferredInstall = null; toast('�
 let lastDay = todayStr();
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
+  // 받아 둔 새 버전은 앱으로 돌아올 때 적용 (열어 둔 창이 없을 때만)
+  if (OTA.state === 'ready' && !sheets.length) { applyOta(); return; }
+  checkOta();
   updateRates();
   const n = runRecurring();
   if (n || todayStr() !== lastDay) {
@@ -1859,6 +2033,9 @@ window.addEventListener('storage', e => {
   updateRates();
   render();
   if (added) toast(`반복 내역 ${added}건을 자동으로 기록했어요`);
+  let lastVer = null;
+  try { lastVer = localStorage.getItem('gagyebu.ver'); localStorage.setItem('gagyebu.ver', APP_VERSION); } catch {}
+  if (lastVer && cmpVer(APP_VERSION, lastVer) > 0 && !added) toast(`v${APP_VERSION}로 업데이트했어요`);
   const params = new URLSearchParams(location.search);
   const add = params.get('add');
   if (params.has('add') || params.has('source')) history.replaceState(null, '', location.pathname);
@@ -1869,6 +2046,10 @@ window.addEventListener('storage', e => {
     let intro = '1';
     try { intro = localStorage.getItem('gagyebu.nativeIntro'); localStorage.setItem('gagyebu.nativeIntro', '1'); } catch {}
     if (!intro && !nativeCall('listenerEnabled', true)) openNotifPerm();
+    // 정상 시작을 앱 본체에 알림 (새 버전이 알리지 못하면 이전 버전으로 되돌아감)
+    const reverted = nativeCall('otaOk', '', APP_VERSION);
+    if (reverted) toast(`새 버전 v${reverted}이 제대로 열리지 않아 이전 버전으로 되돌렸어요`);
+    checkOta(true);
   } else if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
