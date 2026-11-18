@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.1';
+const APP_VERSION = '1.4.2';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -144,7 +144,7 @@ function defaultState() {
   return {
     version: 1,
     settings: {
-      currency: 'SGD', theme: 'system', lastBackup: 0, autoNotif: true, notifBlock: [],
+      currency: 'SGD', theme: 'system', lastBackup: 0, autoNotif: true, tempDelete: true, notifBlock: [],
       rates: {}, ratesBase: '', ratesAt: 0, ratesDate: '', ratesSrc: '', catSeed: CAT_SEED,
     },
     categories: { expense: mk(DEFAULT_CATS.expense), income: mk(DEFAULT_CATS.income) },
@@ -196,6 +196,7 @@ function migrate(d) {
       theme: ['system', 'light', 'dark'].includes(ds.theme) ? ds.theme : 'system',
       lastBackup: num(ds.lastBackup),
       autoNotif: ds.autoNotif !== false,
+      tempDelete: ds.tempDelete !== false,
       rates,
       // 예전 버전의 수동 환율은 당시 기본 통화 기준
       ratesBase: CUR[ds.ratesBase] ? ds.ratesBase : Object.keys(rates).length ? currency : '',
@@ -216,7 +217,7 @@ function migrate(d) {
       .map(l => ({
         id: str(l.id || uid(), 40), time: num(l.time), app: str(l.app, 40), pkg: str(l.pkg, 120), text: str(l.text, 400),
         status: str(l.status, 10), note: str(l.note, 80), txId: l.txId ? str(l.txId, 40) : undefined,
-        memo: l.memo ? str(l.memo, 60) : undefined, autoCat: l.autoCat ? str(l.autoCat, 40) : undefined,
+        memo: l.memo ? str(l.memo, 60) : undefined, autoCat: l.autoCat ? str(l.autoCat, 40) : undefined, tkey: l.tkey ? str(l.tkey, 80) : undefined,
         src: l.src && typeof l.src === 'object' ? { title: str(l.src.title, 200), text: str(l.src.text, 400) } : undefined,
       })),
     categories: { expense: seedCats(cats('expense'), num(ds.catSeed)), income: cats('income') },
@@ -601,6 +602,8 @@ function viewSettings() {
     notif = `<section><h3 class="sec-title">결제 알림 자동 기록</h3><div class="card list">
       <div class="row"><span class="row-icon">🔔</span><span class="grow">알림으로 자동 기록</span>
         <button class="switch ${S.settings.autoNotif ? 'on' : ''}" data-act="autoNotif" role="switch" aria-checked="${S.settings.autoNotif}" aria-label="알림으로 자동 기록"><i></i></button></div>
+      <div class="row"><span class="row-icon">🧹</span><span class="grow">임시 거래 지우기<br><small class="muted">결제 후 1시간 안에 전액 취소되면 둘 다 기록하지 않음</small></span>
+        <button class="switch ${S.settings.tempDelete ? 'on' : ''}" data-act="tempDelete" role="switch" aria-checked="${S.settings.tempDelete}" aria-label="임시 거래 지우기"><i></i></button></div>
       ${perm ? setRow('notifPerm', '✅', '알림 접근 권한', '허용됨') : setRow('notifPerm', '⚠️', '<b>알림 접근 권한 허용하기</b>', '필요')}
       ${setRow('inbox', '📥', '확인 필요한 알림', `${S.inbox.length}건`)}
       ${setRow('notifLog', '📜', '인식 기록', `${S.notifLog.length}건`)}
@@ -1258,7 +1261,7 @@ function openRecEdit(r) {
 const DOLLAR_BASES = ['SGD', 'USD', 'AUD', 'HKD'];
 const NOTIF_STATUS = {
   saved: ['기록됨', 'ok'], review: ['확인 필요', 'warn'], ignored: ['무시', 'mute'],
-  dup: ['중복', 'mute'], blocked: ['차단한 앱', 'mute'], off: ['꺼짐', 'mute'],
+  dup: ['중복', 'mute'], blocked: ['차단한 앱', 'mute'], off: ['꺼짐', 'mute'], temp: ['임시 거래', 'mute'],
 };
 const fmtTime = ts => {
   const d = new Date(ts);
@@ -1278,7 +1281,8 @@ function guessMethod(app) {
   return S.methods[0] || '';
 }
 
-/** 알림 하나를 어떻게 처리할지 결정합니다 (데이터는 바꾸지 않음). */
+/** 결제 뒤 이 시간 안에 같은 금액이 전액 취소되면 임시 거래(택시·주유 선결제, 카드 확인 등)로 보고 둘 다 지움 */
+const TEMP_WINDOW = 60 * 60 * 1000;
 /** 내역의 시각(ms): 자동 기록은 알림 시각, 직접 입력은 날짜+시간 */
 function txTs(t) {
   if (t.auto && t.created) return t.created;
@@ -1286,15 +1290,31 @@ function txTs(t) {
   if (validHM(t.time)) d.setHours(+t.time.slice(0, 2), +t.time.slice(3));
   return d.getTime();
 }
-/** 가맹점 없이 온 취소 알림(예: KB '출금취소')의 원래 결제: 3일 안의 같은 금액 지출 중 가장 최근 것 (이미 취소된 건 제외) */
-function findOriginalPay(hit, time, skipId) {
+/** 지출의 결제 통화·금액 (외화로 기록했으면 원래 금액) */
+const payOf = t => ({ currency: t.ocur || S.settings.currency, amount: t.ocur ? t.oamt : t.amount });
+/** 같은 결제인지 보는 열쇠: 환불 여부 | 통화 | 금액 | 가맹점 (임시 거래로 지운 뒤 늦게 온 중복 알림 거르기) */
+const tkeyOf = (refund, currency, amount, merchant) => `${refund ? 1 : 0}|${currency || ''}|${amount}|${NP.normKey(merchant || '')}`;
+/**
+ * 취소 알림의 원래 결제: 3일 안의 같은 금액 지출 중 가장 최근 것 (이미 취소된 건 제외).
+ * shopKey가 있으면 가맹점도 같아야 함 (KB '출금취소'처럼 가맹점 없이 오면 금액만 봄).
+ */
+function findOriginalPay(hit, time, skipId, shopKey = '') {
   const base = S.settings.currency;
   const same = t => (t.ocur ? t.ocur === hit.currency && Math.abs(t.oamt - hit.amount) < 0.005
     : (hit.currency === base || !hit.currency) && Math.abs(t.amount - hit.amount) < 0.005);
+  const sameShop = t => {
+    if (!shopKey) return true;
+    const k = NP.normKey(t.memo);
+    return k.length >= 2 && (k === shopKey || k.startsWith(shopKey) || shopKey.startsWith(k));
+  };
   const exp = S.tx.filter(t => t.type === 'expense' && t.id !== skipId && same(t));
-  const cands = exp.filter(t => !t.refund && txTs(t) <= time + 2 * 60e3 && txTs(t) > time - 3 * 864e5).sort((a, b) => txTs(b) - txTs(a));
+  const cands = exp.filter(t => !t.refund && sameShop(t) && txTs(t) <= time + 2 * 60e3 && txTs(t) > time - 3 * 864e5).sort((a, b) => txTs(b) - txTs(a));
   return cands.find(o => !exp.some(r => r.refund && NP.normKey(r.memo) === NP.normKey(o.memo) && txTs(r) >= txTs(o))) || null;
 }
+/** 자동 기록한 결제가 곧바로 전액 취소됐는지 (설정에서 끌 수 있음) */
+const isTempPair = (orig, cancelTime) => S.settings.tempDelete && !!orig && !!orig.auto && cancelTime - txTs(orig) <= TEMP_WINDOW;
+
+/** 알림 하나를 어떻게 처리할지 결정합니다 (데이터는 바꾸지 않음). */
 function analyzeNotif(n, { skipId } = {}) {
   const time = Number(n.time) || Date.now();
   const app = String(n.app || n.pkg || '알림').slice(0, 40);
@@ -1314,25 +1334,32 @@ function analyzeNotif(n, { skipId } = {}) {
     amount = Math.max(toBase(hit.amount, hit.currency), 1 / 10 ** cur().dec);
     orig = { ocur: hit.currency, oamt: hit.amount, orate: rateOf(hit.currency) };
   }
-  // 가맹점 없는 취소는 원래 결제의 가맹점·카테고리를 따름
-  const orig0 = refund && !p.merchant ? findOriginalPay(hit, time, skipId) : null;
-  if (orig0 && orig0.ocur && orig0.ocur === hit.currency) {
-    // 전액 취소: 결제 때 환율 그대로 되돌려 합계가 정확히 0이 되게
-    amount = orig0.amount;
-    orig = { ocur: orig0.ocur, oamt: orig0.oamt, orate: orig0.orate };
+  // 취소면 원래 결제를 찾음 (전액 취소)
+  const origPay = refund ? findOriginalPay(hit, time, skipId, p.merchant ? NP.normKey(p.merchant) : '') : null;
+  if (origPay && origPay.ocur && origPay.ocur === hit.currency) {
+    // 결제 때 환율 그대로 되돌려 합계가 정확히 0이 되게
+    amount = origPay.amount;
+    orig = { ocur: origPay.ocur, oamt: origPay.oamt, orate: origPay.orate };
   }
+  // 가맹점 없는 취소는 원래 결제의 가맹점·카테고리를 따름
+  const orig0 = p.merchant ? null : origPay;
   const memo = p.merchant || (orig0 && orig0.memo) || app;
   const key = NP.normKey(memo);
+  const tkey = tkeyOf(refund, hit.currency || base, hit.amount, p.merchant);
   const near = t0 => Math.abs(t0 - time) < 10 * 60 * 1000;
   // 결제 직후 취소가 오는 경우가 있으므로 환불 여부까지 같아야 중복으로 봄
   const dup =
     S.tx.some(t => t.id !== skipId && t.auto && t.type === 'expense' && !!t.refund === !!refund && amount !== null && Math.abs(t.amount - amount) < 0.005 && NP.normKey(t.memo) === key && near(t.created || 0)) ||
-    S.inbox.some(i => !!i.refund === !!refund && i.amountOrig === hit.amount && NP.normKey(i.memo) === key && near(i.time));
+    S.inbox.some(i => !!i.refund === !!refund && i.amountOrig === hit.amount && NP.normKey(i.memo) === key && near(i.time)) ||
+    // 임시 거래로 지운 결제·취소의 중복 알림 (몇 분 안에 오는 문자·앱 알림 중복만; 같은 금액의 실제 요금은 보통 더 늦게 옴)
+    S.notifLog.some(l => l.status === 'temp' && l.tkey === tkey && Math.abs(l.time - time) < 3 * 60 * 1000);
   if (dup) return { status: 'dup', note: '같은 결제가 이미 기록됨 (문자·앱 알림 중복 등)' };
+  // 결제 직후 전액 취소 = 임시 거래: 결제 기록을 지우고 취소도 남기지 않음
+  if (isTempPair(origPay, time)) return { status: 'temp', note: `결제 직후 전액 취소된 임시 거래 (${origPay.memo} 결제 기록을 지움)`.slice(0, 80), origId: origPay.id, memo, tkey, hit, time };
   // 가맹점을 못 찾아 앱 이름으로 적은 기록끼리는 카테고리를 따라가지 않음 (은행 앱 알림이 모두 한 카테고리로 몰리지 않게)
   const cat = orig0 && S.categories.expense.some(c => c.id === orig0.cat) ? orig0.cat
     : NP.guessCategory(memo, 'expense', p.merchant ? expTx().filter(t => t.id !== skipId).sort(sortTx) : [], S.categories.expense, `${n.title || ''} ${n.text || ''}`);
-  const info = { type: 'expense', refund, memo, merchantFound: !!p.merchant, date: ymd(new Date(time)), cat, time, app, hit, amount, orig, method: guessMethod(app) };
+  const info = { type: 'expense', refund, memo, merchantFound: !!p.merchant, date: ymd(new Date(time)), cat, time, app, hit, amount, orig, tkey, method: guessMethod(app) };
   if (amount === null) return { status: 'review', note: hit.currency ? `${hit.currency} 환율이 없어 확인 필요` : '통화를 알 수 없어 확인 필요', ...info };
   return { status: 'saved', note: '', ...info };
 }
@@ -1351,10 +1378,26 @@ function processNotif(n) {
   if (S.notifLog.length > 100) S.notifLog.length = 100;
   return entry;
 }
+/** 임시 거래: 원래 결제 기록(과 이미 적은 취소 기록)을 지우고 인식 기록에 표시 */
+function dropTempPair(orig, cancelEntry, refundTx) {
+  S.tx = S.tx.filter(t => t !== orig && t !== refundTx);
+  const pay = payOf(orig);
+  const amt = fmtCur(pay.amount, pay.currency);
+  const le = S.notifLog.find(l => l.txId === orig.id);
+  if (le) {
+    // 나중에 같은 결제 알림이 또 와도(문자·앱 중복) 다시 적지 않게 열쇠를 남김
+    le.tkey = le.tkey || tkeyOf(0, pay.currency, pay.amount, le.memo && le.memo !== le.app ? le.memo : '');
+    Object.assign(le, { status: 'temp', note: `바로 취소된 임시 거래 · ${amt} 기록 지움` });
+    delete le.txId;
+  }
+  Object.assign(cancelEntry, { status: 'temp', note: `임시 거래 취소 · ${orig.memo} ${amt} 결제 기록 지움`.slice(0, 80) });
+  delete cancelEntry.txId;
+}
 /** 분석 결과로 내역(또는 확인 필요)을 만들고 인식 기록 항목을 채움 */
 function applyNotif(a, entry) {
   Object.assign(entry, { status: a.status, note: a.note });
   delete entry.txId;
+  if (a.tkey) entry.tkey = a.tkey;
   if (a.status === 'saved') {
     const tx = { id: uid(), type: a.type, amount: a.amount, cat: a.cat, date: a.date, time: hmOf(a.time), memo: a.memo, method: a.method, created: a.time, auto: 1 };
     if (a.orig && CUR[a.orig.ocur]) Object.assign(tx, a.orig);
@@ -1367,6 +1410,10 @@ function applyNotif(a, entry) {
   } else if (a.status === 'review') {
     S.inbox.unshift({ id: uid(), time: a.time, type: a.type, cat: a.cat, memo: a.memo, date: a.date, currency: a.hit.currency || '?', amountOrig: a.hit.amount, app: a.app, refund: a.refund || undefined });
     if (S.inbox.length > 50) S.inbox.length = 50;
+  } else if (a.status === 'temp') {
+    const o = S.tx.find(t => t.id === a.origId);
+    entry.memo = a.memo;
+    if (o) dropTempPair(o, entry);
   }
 }
 /** 인식 기록의 원문 (예전 기록은 '제목 · 본문'을 나눔) */
@@ -1378,20 +1425,31 @@ function logSource(e) {
 /**
  * 지금 규칙으로 인식 기록을 다시 처리 (오래된 것부터).
  * - 무시했던 알림이 이제 결제·취소로 보이면 새로 기록
+ * - 자동 기록한 결제와 곧바로 온 전액 취소는 임시 거래로 보고 둘 다 지움
  * - 자동 기록한 내역은 사용자가 고치지 않은 가맹점(메모)·카테고리만 바로잡음 (금액·날짜는 그대로)
  */
 function reprocessLog() {
-  let fixed = 0, added = 0;
+  let fixed = 0, added = 0, cleaned = 0;
   for (const e of [...S.notifLog].reverse()) {
     const n = { ...logSource(e), app: e.app, pkg: e.pkg, time: e.time };
     if (e.status === 'ignored') {
       const a = analyzeNotif(n);
-      if (a.status !== 'saved' && a.status !== 'review') continue;
+      if (!['saved', 'review', 'temp'].includes(a.status)) continue;
       applyNotif(a, e);
-      added++;
+      if (a.status === 'temp') cleaned++;
+      else added++;
     } else if (e.status === 'saved') {
       const tx = e.txId && S.tx.find(t => t.id === e.txId);
       if (!tx || !tx.auto) continue;
+      if (tx.refund) {
+        // 이미 환불로 적어 둔 결제 직후 취소 → 임시 거래로 정리
+        const o = findOriginalPay(payOf(tx), txTs(tx), tx.id, NP.normKey(tx.memo));
+        if (isTempPair(o, txTs(tx))) {
+          dropTempPair(o, e, tx);
+          cleaned++;
+          continue;
+        }
+      }
       const a = analyzeNotif(n, { skipId: tx.id });
       if (a.status !== 'saved' || !!a.refund !== !!tx.refund) continue;
       // 앱이 자동으로 적은 값 (예전 기록은 메모 = 앱 이름, 카테고리 = 인식 기록 문구 앞부분)
@@ -1403,13 +1461,14 @@ function reprocessLog() {
       if (autoCat && tx.cat === autoCat && a.cat !== tx.cat) { tx.cat = a.cat; changed = true; }
       e.memo = tx.memo === a.memo ? a.memo : autoMemo;
       e.autoCat = tx.cat === a.cat ? a.cat : autoCat;
+      if (a.tkey) e.tkey = a.tkey;
       if (changed) {
         e.note = `${catOf(tx).name} · ${tx.refund ? `환불 +${money(tx.amount)}` : money(tx.amount)}`;
         fixed++;
       }
     }
   }
-  return { fixed, added };
+  return { fixed, added, cleaned };
 }
 
 /** 안드로이드 쪽에 쌓인 알림을 가져와 처리 (앱을 열거나 알림이 올 때 호출) */
@@ -1427,11 +1486,16 @@ function pullNative() {
     return;
   }
   list.sort((a, b) => (a.time || 0) - (b.time || 0));
-  const res = list.map(processNotif);
-  const saved = res.filter(r => r.status === 'saved').length;
-  const review = res.filter(r => r.status === 'review').length;
+  // 처리 순간의 상태도 기억 (같은 묶음 안에서 결제가 뒤이은 취소로 임시 거래가 되면 최종 상태가 바뀜)
+  const res = list.map(n => { const e = processNotif(n); return { e, first: e.status }; });
+  const saved = res.filter(r => r.e.status === 'saved').length;
+  const review = res.filter(r => r.e.status === 'review').length;
+  const temp = res.filter(r => r.first === 'temp').length; // 임시 거래 쌍의 수 (취소 알림 기준)
   commit();
-  if (saved || review) toast(`결제 알림 ${saved}건 자동 기록${review ? ` · 확인 필요 ${review}건` : ''}`, { label: '보기', fn: openNotifLog });
+  if (saved || review || temp) {
+    const msg = [saved && `결제 알림 ${saved}건 자동 기록`, review && `확인 필요 ${review}건`, temp && `바로 취소된 임시 거래 ${temp}건 지움`].filter(Boolean).join(' · ');
+    toast(msg, { label: '보기', fn: openNotifLog });
+  }
 }
 window.__gagyebuNativeNotif = pullNative;
 
@@ -1512,9 +1576,9 @@ function openNotifLog() {
           S.notifLog = [];
           commit();
         } else if (b.dataset.x === 'redo') {
-          const { fixed, added } = reprocessLog();
-          if (fixed || added) commit();
-          toast(fixed || added ? [added && `새로 기록 ${added}건`, fixed && `고침 ${fixed}건`].filter(Boolean).join(' · ') : '바뀐 내용이 없어요');
+          const { fixed, added, cleaned } = reprocessLog();
+          if (fixed || added || cleaned) commit();
+          toast(fixed || added || cleaned ? [added && `새로 기록 ${added}건`, fixed && `고침 ${fixed}건`, cleaned && `임시 거래 ${cleaned}건 지움`].filter(Boolean).join(' · ') : '바뀐 내용이 없어요');
         }
       });
     },
@@ -1960,6 +2024,11 @@ const ACT = {
   notifPerm: openNotifPerm,
   notifTest: openNotifTest,
   rates: openRates,
+  tempDelete: () => {
+    S.settings.tempDelete = !S.settings.tempDelete;
+    commit();
+    toast(S.settings.tempDelete ? '결제 직후 전액 취소된 임시 거래는 기록하지 않아요' : '임시 거래도 결제와 환불로 모두 기록해요');
+  },
   autoNotif: () => {
     S.settings.autoNotif = !S.settings.autoNotif;
     commit();
