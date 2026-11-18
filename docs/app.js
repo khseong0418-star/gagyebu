@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.3';
+const APP_VERSION = '1.4.4';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -433,7 +433,8 @@ function txGroups(list, { withYear = false } = {}) {
 
 function txRow(t) {
   const c = catOf(t);
-  const sub = [t.time || '', t.memo ? c.name : '', t.method, origLabel(t), t.refund ? '↩ 환불·취소' : '', t.rid ? '🔁 반복' : '', t.auto ? '🔔 자동' : '']
+  // 결제수단은 목록에 표시하지 않음 (내역을 누르면 편집 화면에서 볼 수 있음)
+  const sub = [t.time || '', t.memo ? c.name : '', origLabel(t), t.refund ? '↩ 환불·취소' : '', t.rid ? '🔁 반복' : '', t.auto ? '🔔 자동' : '']
     .filter(Boolean).join(' · ');
   return `<button class="tx" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-icon">${esc(c.icon)}</span>
