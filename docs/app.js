@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.6';
+const APP_VERSION = '1.4.7';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -54,21 +54,52 @@ function toggleTag(text, tag) {
   const b = text.replace(/[ \t]+$/, '');
   return `${b}${b && !b.endsWith('\n') ? ' ' : ''}#${tag} `;
 }
+/** 이번 실행 중에 지운 태그 (지운 태그가 든 내역을 저장할 때 다시 생기지 않게) */
+const tagsRemoved = new Set();
 function addTag(tag) {
   if (!tag || S.tags.includes(tag)) return false;
   if (S.tags.length >= TAGS_MAX) { toast(`태그는 ${TAGS_MAX}개까지 만들 수 있어요`); return false; }
   S.tags.push(tag);
+  tagsRemoved.delete(tag);
   return true;
 }
-/** 상세에 새로 쓴 #태그를 태그 목록에 추가 */
-const learnTags = text => { for (const t of tagsIn(text)) if (!S.tags.includes(t) && S.tags.length < TAGS_MAX) S.tags.push(t); };
+/** 태그 목록에서 지우고 되돌리기 알림 (지난 내역의 상세 글은 그대로) */
+function removeTag(tag, after) {
+  const i = S.tags.indexOf(tag);
+  if (i < 0) return;
+  S.tags.splice(i, 1);
+  tagsRemoved.add(tag);
+  after();
+  toast(`#${tag} 태그를 지웠어요`, {
+    label: '되돌리기',
+    fn: () => {
+      if (!S.tags.includes(tag)) S.tags.splice(Math.min(i, S.tags.length), 0, tag);
+      tagsRemoved.delete(tag);
+      after();
+    },
+  });
+}
+/** 상세에 새로 쓴 #태그를 태그 목록에 추가 (원래 있던 태그·방금 지운 태그는 제외) */
+function learnTags(text, before = '') {
+  const old = new Set(tagsIn(before));
+  for (const t of tagsIn(text)) {
+    if (!old.has(t) && !tagsRemoved.has(t) && !S.tags.includes(t) && S.tags.length < TAGS_MAX) S.tags.push(t);
+  }
+}
 /** 목록에서 상세 미리보기 (#태그는 색으로 구분) */
 const detailHtml = s => esc(oneLine(s)).replace(/(^|\s)(#[^\s#&<]+)/g, '$1<b class="tg">$2</b>');
 /** 상세 입력칸 위 태그 칩 */
 function mountTags(box, ta) {
+  let delMode = false; // '✕ 삭제'를 누르면 태그를 눌러 지우는 상태
   const draw = () => {
-    box.innerHTML = S.tags.map(t => `<button type="button" class="chip sm ${hasTag(ta.value, t) ? 'on' : ''}" data-tag="${esc(t)}">#${esc(t)}</button>`).join('') +
-      '<button type="button" class="chip sm tag-add" data-tag-add>＋ 새 태그</button>';
+    if (!S.tags.length) delMode = false;
+    box.classList.toggle('del-mode', delMode);
+    box.innerHTML = delMode
+      ? S.tags.map(t => `<button type="button" class="chip sm tag-del" data-tag-del="${esc(t)}" aria-label="#${esc(t)} 태그 삭제">#${esc(t)}<span class="x">✕</span></button>`).join('') +
+        '<button type="button" class="chip sm on" data-tag-mode>완료</button>'
+      : S.tags.map(t => `<button type="button" class="chip sm ${hasTag(ta.value, t) ? 'on' : ''}" data-tag="${esc(t)}">#${esc(t)}</button>`).join('') +
+        '<button type="button" class="chip sm tag-add" data-tag-add>＋ 새 태그</button>' +
+        (S.tags.length ? '<button type="button" class="chip sm tag-add" data-tag-mode>✕ 삭제</button>' : '');
   };
   const setText = v => {
     if (v.length > DETAIL_MAX) { toast(`상세는 ${DETAIL_MAX}자까지 쓸 수 있어요`); return; }
@@ -76,9 +107,11 @@ function mountTags(box, ta) {
     ta.dispatchEvent(new Event('input')); // 높이 맞춤 + 칩 다시 그림
   };
   box.addEventListener('click', e => {
-    const b = e.target.closest('[data-tag], [data-tag-add]');
+    const b = e.target.closest('[data-tag], [data-tag-add], [data-tag-del], [data-tag-mode]');
     if (!b) return;
     if (b.dataset.tag !== undefined) { setText(toggleTag(ta.value, b.dataset.tag)); return; }
+    if (b.dataset.tagMode !== undefined) { delMode = !delMode; draw(); return; }
+    if (b.dataset.tagDel !== undefined) { removeTag(b.dataset.tagDel, () => { save(); draw(); }); return; }
     // 새 태그: 칩 자리에 입력칸을 띄움
     const inp = document.createElement('input');
     Object.assign(inp, { className: 'input tag-in', maxLength: TAG_MAX + 1, placeholder: '새 태그', enterKeyHint: 'done', autocomplete: 'off' });
@@ -882,11 +915,11 @@ function openTxForm(tx, preset = {}) {
     <div class="chips quick"><button class="chip sm" data-q="now">지금</button><button class="chip sm" data-q="-1">어제</button></div>
     <div id="f-mwrap"><div class="f-label">결제수단</div><div class="chips" id="f-methods"></div></div>
     <div class="f-label">메모</div>
-    <input id="f-memo" class="input" maxlength="60" placeholder="예: 점심, 마트 장보기" list="f-memo-list" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off">
+    <input id="f-memo" class="input" maxlength="60" list="f-memo-list" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off">
     <datalist id="f-memo-list">${memos.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
     <div class="f-label">상세 <small>(선택)</small></div>
     <div class="chips tags" id="f-tags"></div>
-    <textarea id="f-detail" class="input area detail" maxlength="${DETAIL_MAX}" rows="2" placeholder="예: 산 물건, 같이 간 사람, 나중에 기억할 내용" autocomplete="off">${esc(f.detail || '')}</textarea>
+    <textarea id="f-detail" class="input area detail" maxlength="${DETAIL_MAX}" rows="2" autocomplete="off">${esc(f.detail || '')}</textarea>
     ${preset.note ? `<p class="note">${preset.note}</p>` : ''}
     <label class="check"><input type="checkbox" id="f-refund" ${(editing ? tx.refund : preset.refund) ? 'checked' : ''}>
       <span><b>환불·결제취소</b><small>돌려받은 금액이에요. 이번 달 지출 합계에서 빠져요.</small></span></label>
@@ -1014,7 +1047,7 @@ function openTxForm(tx, preset = {}) {
         const time = validHM($('#f-time', w).value) ? $('#f-time', w).value : '';
         const memo = $('#f-memo', w).value.trim();
         const detail = cleanDetail($('#f-detail', w).value) || undefined;
-        learnTags(detail);
+        learnTags(detail, editing ? tx.detail : '');
         const method = f.type === 'expense' ? f.method : '';
         const refund = $('#f-refund', w).checked ? 1 : 0;
         if (editing) {
@@ -1288,7 +1321,8 @@ function openTags() {
       <div class="add-row"><input id="t-new" class="input" maxlength="${TAG_MAX + 1}" placeholder="예: 업무, 정산필요" autocomplete="off" enterkeyhint="done">
         <button class="btn primary" data-x="add">추가</button></div>
       <p class="hint">내역 입력 화면의 상세 칸 위에 이 순서대로 보여요. 누르면 상세에 #태그가 들어가고, 한 번 더 누르면 빠져요.
-        상세에 #태그를 직접 써서 저장해도 여기에 자동으로 추가돼요. 띄어쓰기는 빼고 저장돼요. 삭제해도 지난 내역의 상세는 그대로예요.</p>`,
+        상세에 #태그를 직접 써서 저장해도 여기에 자동으로 추가돼요. 띄어쓰기는 빼고 저장돼요.
+        입력 화면에서 ‘✕ 삭제’를 누른 뒤 태그를 눌러도 지울 수 있어요. 태그를 지워도 지난 내역의 상세 글은 그대로예요.</p>`,
     mount(w) {
       const add = () => {
         const v = cleanTag($('#t-new', w).value);
@@ -1304,7 +1338,7 @@ function openTags() {
         if (!b) return;
         const i = Number(b.dataset.i);
         if (b.dataset.x === 'add') add();
-        else if (b.dataset.x === 'del') { S.tags.splice(i, 1); commit(); }
+        else if (b.dataset.x === 'del') removeTag(S.tags[i], commit);
         else if (b.dataset.x === 'up' && i > 0) { [S.tags[i - 1], S.tags[i]] = [S.tags[i], S.tags[i - 1]]; commit(); }
       });
       body.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 't-new') { e.preventDefault(); add(); } });
@@ -1381,7 +1415,7 @@ function openRecEdit(r) {
           if (!(v > 0)) { toast('금액을 입력해 주세요'); return; }
           const time = validHM($('#r-time', w).value) ? $('#r-time', w).value : '';
           const detail = cleanDetail($('#r-detail', w).value) || undefined;
-          learnTags(detail);
+          learnTags(detail, r.detail);
           Object.assign(r, { day: Number($('#r-day', w).value), memo: $('#r-memo', w).value.trim(), detail, time });
           if (r.ocur) Object.assign(r, { oamt: v, amount: toBase(v, r.ocur) ?? r.amount });
           else r.amount = v;
