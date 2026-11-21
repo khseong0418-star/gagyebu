@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.7';
+const APP_VERSION = '1.4.8';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -191,10 +191,6 @@ function compact(n) {
 }
 const roundTo = (v, dec) => { const f = 10 ** dec; return Math.round(v * f) / f; };
 const roundCur = v => roundTo(v, cur().dec);
-function parseAmount(s, dec = cur().dec) {
-  const v = parseFloat(String(s).replace(/[^0-9.]/g, ''));
-  return isFinite(v) ? roundTo(v, dec) : 0;
-}
 /** 입력 중인 금액 문자열에 천 단위 쉼표를 넣습니다. dec = 소수 자릿수 (원·엔은 0) */
 function formatAmountInput(raw, dec = cur().dec) {
   let v = String(raw).replace(/[^0-9.]/g, '');
@@ -210,6 +206,91 @@ function formatAmountInput(raw, dec = cur().dec) {
 }
 const amountToInput = (n, dec = cur().dec) =>
   n ? formatAmountInput(n.toFixed(dec).replace(/\.?0+$/, m => (m.startsWith('.') ? '' : m)), dec) : '';
+
+/* ---------- 금액 계산기 (금액 칸에 12.5+3×2 같은 식을 쓸 수 있음) ---------- */
+const CALC_OP = /[+−×÷]/;
+/** 금액 칸 입력을 다듬습니다: 키보드의 - * / 는 − × ÷ 로, 연산자가 이어지면 마지막 것만, 숫자마다 쉼표 */
+function formatExpr(raw, dec) {
+  const s = String(raw).replace(/\*/g, '×').replace(/\//g, '÷').replace(/-/g, '−').replace(/[^0-9.+−×÷]/g, '')
+    .replace(/^[+−×÷]+/, '').replace(/[+−×÷]+(?=[+−×÷])/g, '');
+  return s.split(/([+−×÷])/).map((p, i) => (i % 2 ? p : formatAmountInput(p, dec))).join('');
+}
+/** 금액 칸의 값(숫자나 계산식) → 금액. 곱하기·나누기 먼저, 끝에 남은 연산자는 무시. 계산할 수 없으면 NaN */
+function calcValue(raw, dec) {
+  const p = String(raw).replace(/,/g, '').split(/([+−×÷])/);
+  if (p.length > 1 && p[p.length - 1] === '') p.splice(-2);
+  if (p.some((x, i) => !(i % 2) && !/^(\d+\.?\d*|\.\d+)$/.test(x))) return NaN;
+  const terms = [Number(p[0])];
+  for (let i = 1; i < p.length; i += 2) {
+    const n = Number(p[i + 1]);
+    if (p[i] === '×') terms[terms.length - 1] *= n;
+    else if (p[i] === '÷') terms[terms.length - 1] /= n;
+    else terms.push(p[i] === '−' ? -n : n);
+  }
+  const v = terms.reduce((a, b) => a + b, 0);
+  return isFinite(v) ? roundTo(v, dec) + 0 : NaN;
+}
+/** 금액 칸을 누르면 아래에 + − × ÷ = 줄을 보여 줍니다. dec() = 지금 통화의 소수 자릿수 */
+function mountCalc(input, dec, onChange = () => {}) {
+  const bar = document.createElement('div');
+  bar.className = 'calc';
+  bar.hidden = true;
+  bar.innerHTML = `<span class="calc-res"></span>${[['+', '더하기'], ['−', '빼기'], ['×', '곱하기'], ['÷', '나누기'], ['=', '계산']]
+    .map(([k, l]) => `<button type="button" data-k="${k}" aria-label="${l}"${k === '=' ? ' class="eq"' : ''}>${k}</button>`).join('')}`;
+  input.closest('.amount-box').after(bar);
+  const res = $('.calc-res', bar);
+  const show = () => {
+    const d = dec();
+    if (!CALC_OP.test(input.value)) { res.className = 'calc-res'; res.textContent = '🧮 계산기'; return; }
+    const v = calcValue(input.value, d);
+    res.className = `calc-res ${v > 0 ? 'ok' : 'bad'}`;
+    res.textContent = v > 0 ? `= ${amountToInput(v, d)}` : isNaN(v) ? '계산할 수 없어요' : '0보다 커야 해요';
+  };
+  // 쉼표가 들어가거나 빠져도 커서가 같은 숫자 뒤에 남도록
+  const apply = (pos = input.selectionStart ?? input.value.length) => {
+    const old = input.value;
+    const k = old.slice(0, pos).replace(/[^0-9.+\-−×÷*/]/g, '').length;
+    const nv = formatExpr(old, dec());
+    if (nv !== old) {
+      input.value = nv;
+      if (document.activeElement === input) {
+        let i = 0;
+        for (let c = 0; i < nv.length && c < k; i++) if (nv[i] !== ',') c++;
+        input.setSelectionRange(i, i);
+      }
+    }
+    show();
+    onChange();
+  };
+  const evaluate = () => {
+    if (!CALC_OP.test(input.value)) return;
+    const v = calcValue(input.value, dec());
+    if (v > 0) { input.value = amountToInput(v, dec()); show(); onChange(); }
+  };
+  let hideT = 0;
+  input.addEventListener('input', () => apply());
+  input.addEventListener('focus', () => { clearTimeout(hideT); bar.hidden = false; show(); });
+  // 다른 곳을 누르면 식을 계산해 두고, 누른 자리가 밀리지 않게 줄은 조금 뒤에 숨김
+  input.addEventListener('blur', () => {
+    evaluate();
+    hideT = setTimeout(() => { if (document.activeElement !== input) bar.hidden = true; }, 250);
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); evaluate(); input.blur(); } });
+  show();
+  // 버튼을 눌러도 금액 칸에서 포커스가 빠지지 않게 (키보드가 닫히지 않음)
+  bar.addEventListener('mousedown', e => { if (e.target.closest('button')) e.preventDefault(); });
+  bar.addEventListener('click', e => {
+    const b = e.target.closest('[data-k]');
+    if (!b) return;
+    if (document.activeElement !== input) input.focus({ preventScroll: true });
+    if (b.dataset.k === '=') { evaluate(); return; }
+    const s = input.value, a = input.selectionStart ?? s.length, z = input.selectionEnd ?? s.length;
+    input.value = s.slice(0, a) + b.dataset.k + s.slice(z);
+    input.setSelectionRange(a + 1, a + 1);
+    apply(a + 1);
+  });
+  return { evaluate, refresh: () => apply() };
+}
 
 /* ---------- 환율 (1 기본통화 = rate 외화) ---------- */
 /** 기본 통화를 바꾼 뒤 새 환율을 아직 못 받았으면 0 */
@@ -552,7 +633,7 @@ function txGroups(list, { withYear = false } = {}) {
 function txRow(t) {
   const c = catOf(t);
   // 결제수단은 목록에 표시하지 않음 (내역을 누르면 편집 화면에서 볼 수 있음)
-  const sub = [t.time || '', t.memo ? c.name : '', origLabel(t), t.refund ? '↩ 환불·취소' : '', t.rid ? '🔁 반복' : '', t.auto ? '🔔 자동' : '']
+  const sub = [t.time || '', t.memo ? c.name : '', origLabel(t), t.refund ? '↩ 환불·취소' : '', t.rid ? '🔁 반복' : '', t.auto ? '🔔' : '']
     .filter(Boolean).join(' · ');
   return `<button class="tx" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-icon">${esc(c.icon)}</span>
@@ -907,19 +988,19 @@ function openTxForm(tx, preset = {}) {
       <span class="cur-pill"><b id="f-cur-code"></b> ▾<select id="f-cur" aria-label="통화">${curList
         .map(k => `<option value="${k}" ${k === f.cur ? 'selected' : ''}>${k} · ${esc(CUR[k].name)}${k === base ? ' (기본)' : ''}</option>`).join('')}</select></span></div>
     <div class="conv" id="f-conv" hidden></div>
-    <div class="f-label">카테고리</div>
-    <div class="cat-grid" id="f-cats"></div>
-    <div class="f-label">날짜·시간</div>
-    <div class="date-row"><input type="date" id="f-date" class="input" value="${f.date}" aria-label="날짜">
-      <input type="time" id="f-time" class="input time" value="${f.time}" aria-label="시간"></div>
-    <div class="chips quick"><button class="chip sm" data-q="now">지금</button><button class="chip sm" data-q="-1">어제</button></div>
-    <div id="f-mwrap"><div class="f-label">결제수단</div><div class="chips" id="f-methods"></div></div>
     <div class="f-label">메모</div>
     <input id="f-memo" class="input" maxlength="60" list="f-memo-list" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off">
     <datalist id="f-memo-list">${memos.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
     <div class="f-label">상세 <small>(선택)</small></div>
     <div class="chips tags" id="f-tags"></div>
     <textarea id="f-detail" class="input area detail" maxlength="${DETAIL_MAX}" rows="2" autocomplete="off">${esc(f.detail || '')}</textarea>
+    <div class="f-label">날짜·시간</div>
+    <div class="date-row"><input type="date" id="f-date" class="input" value="${f.date}" aria-label="날짜">
+      <input type="time" id="f-time" class="input time" value="${f.time}" aria-label="시간"></div>
+    <div class="chips quick"><button class="chip sm" data-q="now">지금</button><button class="chip sm" data-q="-1">어제</button></div>
+    <div class="f-label">카테고리</div>
+    <div class="cat-grid" id="f-cats"></div>
+    <div id="f-mwrap"><div class="f-label">결제수단</div><div class="chips" id="f-methods"></div></div>
     ${preset.note ? `<p class="note">${preset.note}</p>` : ''}
     <label class="check"><input type="checkbox" id="f-refund" ${(editing ? tx.refund : preset.refund) ? 'checked' : ''}>
       <span><b>환불·결제취소</b><small>돌려받은 금액이에요. 이번 달 지출 합계에서 빠져요.</small></span></label>
@@ -944,7 +1025,7 @@ function openTxForm(tx, preset = {}) {
         if (f.cur === base) { conv.hidden = true; return; }
         conv.hidden = false;
         const r = rateFor(f.cur);
-        const v = parseAmount(amt.value, curOf(f.cur).dec);
+        const v = calcValue(amt.value, curOf(f.cur).dec);
         conv.innerHTML = r > 0
           ? `≈ <b>${money(v > 0 ? roundCur(v / r) : 0)}</b>로 기록 · ${esc(rateText(f.cur, r))}`
           : `⚠ ${esc(f.cur)} 환율을 아직 받지 못했어요. 인터넷에 연결되면 자동으로 받아와요.`;
@@ -957,9 +1038,13 @@ function openTxForm(tx, preset = {}) {
         updConv();
       };
       drawCur();
+      const calc = mountCalc(amt, () => curOf(f.cur).dec, () => {
+        $('#f-amt-box', w).classList.remove('err');
+        updConv();
+      });
       sel.addEventListener('change', () => {
         f.cur = sel.value;
-        amt.value = formatAmountInput(amt.value, curOf(f.cur).dec);
+        calc.refresh();
         drawCur();
         if (!(rateOf(f.cur) > 0)) updateRates({ force: true });
       });
@@ -993,12 +1078,6 @@ function openTxForm(tx, preset = {}) {
         else d.setDate(d.getDate() + Number(b.dataset.q));
         $('#f-date', w).value = ymd(d);
       }));
-      amt.addEventListener('input', () => {
-        amt.value = formatAmountInput(amt.value, curOf(f.cur).dec);
-        $('#f-amt-box', w).classList.remove('err');
-        updConv();
-      });
-      amt.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); amt.blur(); } });
       $('#f-memo', w).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
       autoGrow($('#f-detail', w));
       mountTags($('#f-tags', w), $('#f-detail', w));
@@ -1015,19 +1094,22 @@ function openTxForm(tx, preset = {}) {
           toast('삭제했어요', { label: '되돌리기', fn: () => { S.tx.push(tx); commit(); } });
           return;
         }
-        const entered = parseAmount(amt.value, curOf(f.cur).dec);
+        calc.evaluate();
+        const entered = calcValue(amt.value, curOf(f.cur).dec);
         if (!(entered > 0)) {
           const box = $('#f-amt-box', w);
           box.classList.remove('err');
           void box.offsetWidth;
           box.classList.add('err');
-          toast('금액을 입력해 주세요');
+          box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          toast(CALC_OP.test(amt.value) ? '계산식을 확인해 주세요' : '금액을 입력해 주세요');
           return;
         }
         if (!f.cat) {
           cats.classList.remove('err');
           void cats.offsetWidth;
           cats.classList.add('err');
+          cats.scrollIntoView({ block: 'center', behavior: 'smooth' });
           toast('카테고리를 선택해 주세요');
           return;
         }
@@ -1404,15 +1486,16 @@ function openRecEdit(r) {
     footer: '<button class="btn ghost danger-ink" data-f="del">삭제</button><button class="btn primary grow" data-f="save">저장</button>',
     mount(w) {
       const amt = $('#r-amt', w);
-      amt.addEventListener('input', () => { amt.value = formatAmountInput(amt.value, cc.dec); });
+      const calc = mountCalc(amt, () => cc.dec);
       autoGrow($('#r-detail', w));
       mountTags($('#r-tags', w), $('#r-detail', w));
       $('.sheet-foot', w).addEventListener('click', async e => {
         const b = e.target.closest('[data-f]');
         if (!b) return;
         if (b.dataset.f === 'save') {
-          const v = parseAmount(amt.value, cc.dec);
-          if (!(v > 0)) { toast('금액을 입력해 주세요'); return; }
+          calc.evaluate();
+          const v = calcValue(amt.value, cc.dec);
+          if (!(v > 0)) { toast(CALC_OP.test(amt.value) ? '계산식을 확인해 주세요' : '금액을 입력해 주세요'); return; }
           const time = validHM($('#r-time', w).value) ? $('#r-time', w).value : '';
           const detail = cleanDetail($('#r-detail', w).value) || undefined;
           learnTags(detail, r.detail);

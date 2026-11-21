@@ -371,13 +371,24 @@ select.input { appearance: auto; }
 .amount-box.sm input { font-size: 24px; }
 .amount-cur { font-size: 22px; font-weight: 700; color: var(--ink-2); }
 .amount-box.err { border-color: var(--danger); animation: shake 0.3s; }
+/* 금액 계산기 줄 */
+.calc { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.calc[hidden] { display: none; }
+.calc-res { flex: 1; min-width: 0; padding-left: 2px; font-size: 14px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.calc-res.ok { color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+.calc-res.bad { color: var(--danger-ink); }
+.calc button {
+  flex: none; width: 44px; height: 38px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--card-2); color: var(--ink); font-size: 20px; font-weight: 600;
+}
+.calc button.eq { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .cat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .cat-grid.err { animation: shake 0.3s; }
 .cat-btn {
-  display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0;
-  padding: 8px 2px 7px; border-radius: 14px; background: var(--card-2); border: 1.5px solid transparent;
+  display: flex; flex-direction: column; align-items: center; gap: 3px; min-width: 0;
+  padding: 7px 2px 6px; border-radius: 12px; background: var(--card-2); border: 1.5px solid transparent;
 }
-.cat-btn span { font-size: 18px; line-height: 1.1; }
+.cat-btn span { font-size: 14px; line-height: 1.1; }
 .cat-btn small { max-width: 100%; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 2px; }
 .cat-btn.on { background: var(--accent-soft); border-color: var(--accent); }
 .cat-btn.on small { color: var(--ink); font-weight: 700; }
