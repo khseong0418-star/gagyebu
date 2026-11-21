@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.4';
+const APP_VERSION = '1.4.6';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -31,6 +31,86 @@ const sortTx = (a, b) => b.date.localeCompare(a.date) || (b.time || '').localeCo
 const hmOf = ts => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 const nowHM = () => hmOf(Date.now());
 const validHM = s => /^([01]\d|2[0-3]):[0-5]\d$/.test(s || '');
+/** 내역의 상세 내용 (여러 줄 자유 입력) */
+const DETAIL_MAX = 500;
+const cleanDetail = s => String(s || '').replace(/\r\n?/g, '\n').replace(/[ \t]+$/gm, '').replace(/(\S)[ \t]{2,}/g, '$1 ').replace(/\n{3,}/g, '\n\n').trim().slice(0, DETAIL_MAX);
+const oneLine = s => String(s || '').replace(/\s+/g, ' ').trim();
+/** 상세 칸 위의 태그: 누르면 상세에 #태그가 들어가고 다시 누르면 빠짐 */
+const TAG_MAX = 15, TAGS_MAX = 40;
+const DEFAULT_TAGS = ['업무', '정산필요', '회식', '가족', '친구'];
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const cleanTag = s => String(s || '').replace(/[\s#]+/g, '').slice(0, TAG_MAX);
+const hasTag = (text, tag) => new RegExp(`(^|\\s)#${escRe(tag)}(?=\\s|$)`).test(text);
+/** 상세에 직접 쓴 #태그들 (#05-12 같은 주소·번호처럼 숫자로 시작하면 제외) */
+const tagsIn = text => [...String(text || '').matchAll(/(?:^|\s)#([^\s#]+)/g)]
+  .map(m => m[1].replace(/[.,!?;:)\]}'"]+$/, '')).filter(t => t && !/^\d/.test(t) && t.length <= TAG_MAX);
+function toggleTag(text, tag) {
+  const e = escRe('#' + tag);
+  if (hasTag(text, tag)) {
+    // 줄 맨 앞이면 뒤 공백, 아니면 앞 공백과 함께 지움
+    const a = text.replace(new RegExp(`(^|\\n)${e}(?=\\s|$)[ \\t]*`), '$1');
+    return a !== text ? a : text.replace(new RegExp(`[ \\t]+${e}(?=\\s|$)`), '');
+  }
+  const b = text.replace(/[ \t]+$/, '');
+  return `${b}${b && !b.endsWith('\n') ? ' ' : ''}#${tag} `;
+}
+function addTag(tag) {
+  if (!tag || S.tags.includes(tag)) return false;
+  if (S.tags.length >= TAGS_MAX) { toast(`태그는 ${TAGS_MAX}개까지 만들 수 있어요`); return false; }
+  S.tags.push(tag);
+  return true;
+}
+/** 상세에 새로 쓴 #태그를 태그 목록에 추가 */
+const learnTags = text => { for (const t of tagsIn(text)) if (!S.tags.includes(t) && S.tags.length < TAGS_MAX) S.tags.push(t); };
+/** 목록에서 상세 미리보기 (#태그는 색으로 구분) */
+const detailHtml = s => esc(oneLine(s)).replace(/(^|\s)(#[^\s#&<]+)/g, '$1<b class="tg">$2</b>');
+/** 상세 입력칸 위 태그 칩 */
+function mountTags(box, ta) {
+  const draw = () => {
+    box.innerHTML = S.tags.map(t => `<button type="button" class="chip sm ${hasTag(ta.value, t) ? 'on' : ''}" data-tag="${esc(t)}">#${esc(t)}</button>`).join('') +
+      '<button type="button" class="chip sm tag-add" data-tag-add>＋ 새 태그</button>';
+  };
+  const setText = v => {
+    if (v.length > DETAIL_MAX) { toast(`상세는 ${DETAIL_MAX}자까지 쓸 수 있어요`); return; }
+    ta.value = v;
+    ta.dispatchEvent(new Event('input')); // 높이 맞춤 + 칩 다시 그림
+  };
+  box.addEventListener('click', e => {
+    const b = e.target.closest('[data-tag], [data-tag-add]');
+    if (!b) return;
+    if (b.dataset.tag !== undefined) { setText(toggleTag(ta.value, b.dataset.tag)); return; }
+    // 새 태그: 칩 자리에 입력칸을 띄움
+    const inp = document.createElement('input');
+    Object.assign(inp, { className: 'input tag-in', maxLength: TAG_MAX + 1, placeholder: '새 태그', enterKeyHint: 'done', autocomplete: 'off' });
+    b.replaceWith(inp);
+    inp.focus();
+    let done = false;
+    const finish = ok => {
+      if (done) return;
+      done = true;
+      const t = ok ? cleanTag(inp.value) : '';
+      if (t && (S.tags.includes(t) || addTag(t))) {
+        save();
+        if (!hasTag(ta.value, t)) setText(toggleTag(ta.value, t));
+      }
+      draw();
+    };
+    inp.addEventListener('keydown', e2 => {
+      if (e2.key === 'Enter') { e2.preventDefault(); finish(true); }
+      else if (e2.key === 'Escape') { e2.preventDefault(); e2.stopPropagation(); finish(false); }
+    });
+    inp.addEventListener('blur', () => finish(true));
+  });
+  ta.addEventListener('input', draw);
+  draw();
+}
+/** 여러 줄 입력칸이 내용에 맞게 늘어나게 */
+function autoGrow(ta) {
+  if (!ta) return;
+  const fit = () => { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 2 + 'px'; };
+  ta.addEventListener('input', fit);
+  requestAnimationFrame(fit);
+}
 
 const ICON = {
   left: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
@@ -152,6 +232,7 @@ function defaultState() {
     },
     categories: { expense: mk(DEFAULT_CATS.expense), income: mk(DEFAULT_CATS.income) },
     methods: ['카드', '현금', '계좌이체'],
+    tags: [...DEFAULT_TAGS],
     tx: [],
     recurring: [],
     inbox: [],
@@ -226,11 +307,13 @@ function migrate(d) {
       })),
     categories: { expense: seedCats(cats('expense'), num(ds.catSeed)), income: cats('income') },
     methods: Array.isArray(d.methods) ? d.methods.map(m => String(m).slice(0, 20)).filter(Boolean) : base.methods,
+    tags: Array.isArray(d.tags) ? [...new Set(d.tags.map(cleanTag).filter(Boolean))].slice(0, TAGS_MAX) : base.tags,
     tx: (Array.isArray(d.tx) ? d.tx : [])
       .filter(t => t && validType(t.type) && num(t.amount) > 0 && /^\d{4}-\d{2}-\d{2}$/.test(t.date))
       .map(t => ({
         id: String(t.id || uid()), type: t.type, amount: num(t.amount), cat: String(t.cat || ''),
         date: t.date, memo: String(t.memo || '').slice(0, 60), method: String(t.method || ''),
+        detail: t.detail ? String(t.detail).slice(0, DETAIL_MAX) : undefined,
         rid: t.rid ? String(t.rid) : undefined, created: num(t.created),
         // 시간이 없던 예전 기록은 그날 입력한 경우에만 입력 시각으로 채움
         time: validHM(t.time) ? t.time : num(t.created) && ymd(new Date(num(t.created))) === t.date ? hmOf(num(t.created)) : '',
@@ -243,7 +326,8 @@ function migrate(d) {
       .map(r => ({
         id: String(r.id || uid()), type: r.type, amount: num(r.amount), cat: String(r.cat || ''),
         memo: String(r.memo || ''), method: String(r.method || ''),
-        day: Math.min(31, Math.max(1, Math.round(num(r.day)) || 1)), last: r.last,
+        detail: r.detail ? String(r.detail).slice(0, DETAIL_MAX) : undefined,
+        day:Math.min(31, Math.max(1, Math.round(num(r.day)) || 1)), last: r.last,
         time: validHM(r.time) ? r.time : '',
         ...origFields(r),
       })),
@@ -320,6 +404,7 @@ function runRecurring() {
       const date = `${m}-${pad(Math.min(r.day, dim(y, mo)))}`;
       if (date > today) break;
       const t = { id: uid(), type: r.type, amount: r.amount, cat: r.cat, date, time: r.time || '', memo: r.memo, method: r.method, rid: r.id, created: Date.now() };
+      if (r.detail) t.detail = r.detail;
       // 외화 고정지출(예: 원화 통신비)은 그때그때 환율로 환산, 환율이 없으면 등록 당시 금액
       if (r.ocur) {
         const conv = toBase(r.oamt, r.ocur);
@@ -438,17 +523,17 @@ function txRow(t) {
     .filter(Boolean).join(' · ');
   return `<button class="tx" data-act="edit" data-id="${esc(t.id)}">
     <span class="tx-icon">${esc(c.icon)}</span>
-    <span class="tx-main"><span class="tx-title">${esc(t.memo || c.name)}</span>${sub ? `<span class="tx-sub">${esc(sub)}</span>` : ''}</span>
+    <span class="tx-main"><span class="tx-title">${esc(t.memo || c.name)}</span>${sub ? `<span class="tx-sub">${esc(sub)}</span>` : ''}${t.detail ? `<span class="tx-detail">${detailHtml(t.detail)}</span>` : ''}</span>
     ${t.refund ? `<span class="tx-amt inc-ink">+${money(t.amount)}</span>` : `<span class="tx-amt">${money(t.amount)}</span>`}
   </button>`;
 }
 
 function viewSearch() {
   const q = UI.query.trim().toLowerCase();
-  if (!q) return '<p class="empty-sm">메모, 카테고리, 결제수단, 금액으로<br>전체 기간의 내역을 찾아요.</p>';
+  if (!q) return '<p class="empty-sm">메모, 상세·#태그, 카테고리, 결제수단, 금액으로<br>전체 기간의 내역을 찾아요.</p>';
   const res = expTx().filter(t => {
     const c = catOf(t);
-    return [t.memo, c.name, t.method, String(t.amount)].some(x => x && String(x).toLowerCase().includes(q));
+    return [t.memo, t.detail, c.name, t.method, String(t.amount)].some(x => x && String(x).toLowerCase().includes(q));
   });
   if (!res.length) return `<p class="empty-sm">‘${esc(UI.query.trim())}’ 검색 결과가 없어요</p>`;
   const s = sums(res);
@@ -636,6 +721,7 @@ function viewSettings() {
   <section><h3 class="sec-title">항목 관리</h3><div class="card list">
     ${setRow('cats', '🗂️', '카테고리', `${S.categories.expense.length}개`)}
     ${setRow('methods', '💳', '결제수단', `${S.methods.length}개`)}
+    ${setRow('tags', '🏷️', '태그', `${S.tags.length}개`)}
     ${setRow('recurring', '🔁', '매월 반복 내역', `${S.recurring.length}개`)}
   </div></section>
   ${notif}
@@ -776,7 +862,7 @@ function openTxForm(tx, preset = {}) {
     ? { ...tx, time: tx.time || '', cur: tx.ocur || base }
     : {
         type: 'expense', cat: preset.cat || null, date: preset.date || defaultDate(), time: preset.time || nowHM(),
-        memo: preset.memo || '', method: S.methods[0] || '', cur: CUR[preset.cur] ? preset.cur : base,
+        memo: preset.memo || '', detail: '', method: S.methods[0] || '', cur: CUR[preset.cur] ? preset.cur : base,
       };
   const amt0 = editing ? (tx.ocur ? tx.oamt : tx.amount) : preset.amount || 0;
   // 기본 통화 먼저, 그다음 최근에 쓴 외화, 나머지
@@ -798,6 +884,9 @@ function openTxForm(tx, preset = {}) {
     <div class="f-label">메모</div>
     <input id="f-memo" class="input" maxlength="60" placeholder="예: 점심, 마트 장보기" list="f-memo-list" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off">
     <datalist id="f-memo-list">${memos.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
+    <div class="f-label">상세 <small>(선택)</small></div>
+    <div class="chips tags" id="f-tags"></div>
+    <textarea id="f-detail" class="input area detail" maxlength="${DETAIL_MAX}" rows="2" placeholder="예: 산 물건, 같이 간 사람, 나중에 기억할 내용" autocomplete="off">${esc(f.detail || '')}</textarea>
     ${preset.note ? `<p class="note">${preset.note}</p>` : ''}
     <label class="check"><input type="checkbox" id="f-refund" ${(editing ? tx.refund : preset.refund) ? 'checked' : ''}>
       <span><b>환불·결제취소</b><small>돌려받은 금액이에요. 이번 달 지출 합계에서 빠져요.</small></span></label>
@@ -878,6 +967,8 @@ function openTxForm(tx, preset = {}) {
       });
       amt.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); amt.blur(); } });
       $('#f-memo', w).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
+      autoGrow($('#f-detail', w));
+      mountTags($('#f-tags', w), $('#f-detail', w));
       if (!editing && !preset.amount) amt.focus({ preventScroll: true });
 
       $('.sheet-foot', w).addEventListener('click', e => {
@@ -922,19 +1013,23 @@ function openTxForm(tx, preset = {}) {
         const date = /^\d{4}-\d{2}-\d{2}$/.test($('#f-date', w).value) ? $('#f-date', w).value : todayStr();
         const time = validHM($('#f-time', w).value) ? $('#f-time', w).value : '';
         const memo = $('#f-memo', w).value.trim();
+        const detail = cleanDetail($('#f-detail', w).value) || undefined;
+        learnTags(detail);
         const method = f.type === 'expense' ? f.method : '';
         const refund = $('#f-refund', w).checked ? 1 : 0;
         if (editing) {
           // 예전 방식의 원래 금액 문구는 금액·통화를 바꾸면 의미가 없어지므로 지움
           const keepOld = tx.orig && f.cur === base && amount === tx.amount;
-          Object.assign(tx, { type: f.type, amount, cat: f.cat, date, time, memo, method, refund: refund || undefined, ...orig, orig: keepOld ? tx.orig : undefined });
+          Object.assign(tx, { type: f.type, amount, cat: f.cat, date, time, memo, detail, method, refund: refund || undefined, ...orig, orig: keepOld ? tx.orig : undefined });
         } else {
           const t = { id: uid(), type: f.type, amount, cat: f.cat, date, time, memo, method, created: Date.now() };
+          if (detail) t.detail = detail;
           if (refund) t.refund = 1;
           if (orig.ocur) Object.assign(t, orig);
           const rec = $('#f-rec', w);
           if (rec && rec.checked && !refund) {
             const r = { id: uid(), type: f.type, amount, cat: f.cat, memo, method, time, day: Number(date.slice(8, 10)), last: ymOf(date) };
+            if (detail) r.detail = detail;
             if (orig.ocur) Object.assign(r, orig);
             S.recurring.push(r);
             t.rid = r.id;
@@ -1181,6 +1276,42 @@ function openMethods() {
   });
 }
 
+function openTags() {
+  openSheet({
+    title: '태그 관리',
+    live: true,
+    body: () => `
+      ${S.tags.length ? `<div class="card-in list">${S.tags.map((t, i) => `<div class="row"><span class="grow">#${esc(t)}</span>
+        <button class="icon-btn sm" data-x="up" data-i="${i}" ${i === 0 ? 'disabled' : ''} aria-label="위로">${ICON.up}</button>
+        <button class="icon-btn sm" data-x="del" data-i="${i}" aria-label="삭제">${ICON.close}</button></div>`).join('')}</div>`
+        : '<p class="empty-sm">태그가 없어요</p>'}
+      <div class="add-row"><input id="t-new" class="input" maxlength="${TAG_MAX + 1}" placeholder="예: 업무, 정산필요" autocomplete="off" enterkeyhint="done">
+        <button class="btn primary" data-x="add">추가</button></div>
+      <p class="hint">내역 입력 화면의 상세 칸 위에 이 순서대로 보여요. 누르면 상세에 #태그가 들어가고, 한 번 더 누르면 빠져요.
+        상세에 #태그를 직접 써서 저장해도 여기에 자동으로 추가돼요. 띄어쓰기는 빼고 저장돼요. 삭제해도 지난 내역의 상세는 그대로예요.</p>`,
+    mount(w) {
+      const add = () => {
+        const v = cleanTag($('#t-new', w).value);
+        if (!v) return;
+        if (S.tags.includes(v)) { toast('이미 있는 태그예요'); return; }
+        if (!addTag(v)) return;
+        commit();
+        $('#t-new', w).focus();
+      };
+      const body = $('.sheet-body', w);
+      body.addEventListener('click', e => {
+        const b = e.target.closest('[data-x]');
+        if (!b) return;
+        const i = Number(b.dataset.i);
+        if (b.dataset.x === 'add') add();
+        else if (b.dataset.x === 'del') { S.tags.splice(i, 1); commit(); }
+        else if (b.dataset.x === 'up' && i > 0) { [S.tags[i - 1], S.tags[i]] = [S.tags[i], S.tags[i - 1]]; commit(); }
+      });
+      body.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id === 't-new') { e.preventDefault(); add(); } });
+    },
+  });
+}
+
 function openRecurring() {
   openSheet({
     title: '매월 반복 내역',
@@ -1232,11 +1363,16 @@ function openRecEdit(r) {
         <input type="time" id="r-time" class="input time" value="${r.time || ''}" aria-label="시간"></div>
       <div class="f-label">메모</div>
       <input id="r-memo" class="input" maxlength="60" value="${esc(r.memo)}" autocomplete="off">
+      <div class="f-label">상세 <small>(선택)</small></div>
+      <div class="chips tags" id="r-tags"></div>
+      <textarea id="r-detail" class="input area detail" maxlength="${DETAIL_MAX}" rows="2" autocomplete="off">${esc(r.detail || '')}</textarea>
       <p class="hint">변경 내용은 앞으로 기록될 내역부터 적용돼요. 삭제해도 이미 기록된 내역은 남아 있어요.</p>`,
     footer: '<button class="btn ghost danger-ink" data-f="del">삭제</button><button class="btn primary grow" data-f="save">저장</button>',
     mount(w) {
       const amt = $('#r-amt', w);
       amt.addEventListener('input', () => { amt.value = formatAmountInput(amt.value, cc.dec); });
+      autoGrow($('#r-detail', w));
+      mountTags($('#r-tags', w), $('#r-detail', w));
       $('.sheet-foot', w).addEventListener('click', async e => {
         const b = e.target.closest('[data-f]');
         if (!b) return;
@@ -1244,7 +1380,9 @@ function openRecEdit(r) {
           const v = parseAmount(amt.value, cc.dec);
           if (!(v > 0)) { toast('금액을 입력해 주세요'); return; }
           const time = validHM($('#r-time', w).value) ? $('#r-time', w).value : '';
-          Object.assign(r, { day: Number($('#r-day', w).value), memo: $('#r-memo', w).value.trim(), time });
+          const detail = cleanDetail($('#r-detail', w).value) || undefined;
+          learnTags(detail);
+          Object.assign(r, { day: Number($('#r-day', w).value), memo: $('#r-memo', w).value.trim(), detail, time });
           if (r.ocur) Object.assign(r, { oamt: v, amount: toBase(v, r.ocur) ?? r.amount });
           else r.amount = v;
           commit();
@@ -1937,10 +2075,10 @@ function exportCsv() {
     if (/^[=+\-@]/.test(s)) s = "'" + s; // 엑셀 수식 실행 방지
     return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const rows = [['날짜', '시간', '카테고리', `금액(${S.settings.currency})`, '결제수단', '메모', '원래 통화', '원래 금액', '반복', '알림 자동', '환불']];
+  const rows = [['날짜', '시간', '카테고리', `금액(${S.settings.currency})`, '결제수단', '메모', '상세', '원래 통화', '원래 금액', '반복', '알림 자동', '환불']];
   const list = expTx().sort((a, b) => a.date.localeCompare(b.date) || (a.created || 0) - (b.created || 0));
-  for (const t of list) rows.push([t.date, t.time || '', catOf(t).name, signed(t), t.method, t.memo, t.ocur || '', t.ocur ? (t.refund ? -t.oamt : t.oamt) : '', t.rid ? 'Y' : '', t.auto ? 'Y' : '', t.refund ? 'Y' : '']);
-  const csv = '﻿' + rows.map(r => r.map((v, i) => (i === 3 || i === 7 ? String(v) : safe(v))).join(',')).join('\r\n');
+  for (const t of list) rows.push([t.date, t.time || '', catOf(t).name, signed(t), t.method, t.memo, t.detail || '', t.ocur || '', t.ocur ? (t.refund ? -t.oamt : t.oamt) : '', t.rid ? 'Y' : '', t.auto ? 'Y' : '', t.refund ? 'Y' : '']);
+  const csv = '﻿' + rows.map(r => r.map((v, i) => (i === 3 || i === 8 ? String(v) : safe(v))).join(',')).join('\r\n');
   if (NATIVE) {
     if (nativeSaveFile(`가계부_${todayStr()}.csv`, 'text/csv', csv, false)) toast(`다운로드/가계부 폴더에 CSV 저장 (${list.length}건)`);
     return;
@@ -2018,6 +2156,7 @@ const ACT = {
   theme: v => { S.settings.theme = v; commit(); },
   cats: openCatManager,
   methods: openMethods,
+  tags: openTags,
   recurring: openRecurring,
   backupShare,
   backupSave,
