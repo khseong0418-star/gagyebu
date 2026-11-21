@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.8';
+const APP_VERSION = '1.4.9';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -969,6 +969,82 @@ const curAffix = () => {
   return c.suffix ? ['', `<span class="amount-cur">${c.sym}</span>`] : [`<span class="amount-cur">${c.sym}</span>`, ''];
 };
 
+/* ---------- 앞글자로 찾기: 한글은 입력 중인 마지막 글자도 맞춰 봄 (ㅅ·시·식 → 식당, 식 → 시가) ---------- */
+const CHO_JAMO = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const JUNG_MORE = { 8: [9, 10, 11], 13: [14, 15, 16], 18: [19] }; // ㅗ→ㅘㅙㅚ, ㅜ→ㅝㅞㅟ, ㅡ→ㅢ
+const JONG_MORE = { 1: [3], 4: [5, 6], 8: [9, 10, 11, 12, 13, 14, 15], 17: [18] }; // 받침 ㄱ→ㄳ, ㄴ→ㄵㄶ, ㄹ→ㄺ…ㅀ, ㅂ→ㅄ
+const JONG_CHO = { 1: 0, 2: 1, 4: 2, 7: 3, 8: 5, 16: 6, 17: 7, 19: 9, 20: 10, 21: 11, 22: 12, 23: 14, 24: 15, 25: 16, 26: 17, 27: 18 };
+/** 한글 음절 → [초성, 중성, 종성] 번호 (음절이 아니면 null) */
+const hangul = ch => {
+  const n = ch ? ch.charCodeAt(0) - 0xac00 : -1;
+  return n >= 0 && n < 11172 ? [Math.floor(n / 588), Math.floor((n % 588) / 28), n % 28] : null;
+};
+function startsLike(text, q) {
+  text = text.toLowerCase();
+  q = q.toLowerCase();
+  if (text.startsWith(q)) return true;
+  const i = q.length - 1, last = q[i];
+  if (!text.startsWith(q.slice(0, i))) return false;
+  const d = hangul(text[i]);
+  if (/[ㄱ-ㆎ]/.test(last)) { // 자음·모음만 친 상태
+    const ci = CHO_JAMO.indexOf(last);
+    return ci < 0 || (!!d && d[0] === ci); // 모음(천지인 ㆍ 등)은 앞 글자까지만 비교
+  }
+  const c = hangul(last);
+  if (!c || !d || c[0] !== d[0]) return false;
+  if (!c[2]) return c[1] === d[1] || (JUNG_MORE[c[1]] || []).includes(d[1]);
+  if (c[1] !== d[1]) return false;
+  if ((JONG_MORE[c[2]] || []).includes(d[2])) return true;
+  const e = hangul(text[i + 1]); // 받침이 다음 글자 첫소리가 될 수도 있음 (식 → 시가)
+  return !d[2] && !!e && e[0] === JONG_CHO[c[2]];
+}
+/** 입력 칸 아래에 예전 값 목록. 비어 있으면 전부(최근 순), 글자를 치면 그 글자로 시작하는 것만 */
+function mountSuggest(input, items) {
+  const list = document.createElement('div');
+  list.className = 'sugg';
+  list.hidden = true;
+  input.after(list);
+  let shown = [], hideT = 0;
+  const keepVisible = () => {
+    const body = input.closest('.sheet-body');
+    if (!body || list.hidden) return;
+    const b = body.getBoundingClientRect(), l = list.getBoundingClientRect(), t = input.getBoundingClientRect();
+    const over = l.bottom - b.bottom + 8;
+    if (over > 0) body.scrollTop += Math.min(over, Math.max(0, t.top - b.top - 4));
+  };
+  const draw = () => {
+    const q = input.value.trimStart(), cur = input.value.trim();
+    shown = items.filter(m => m !== cur && startsLike(m, q)).slice(0, 30);
+    list.hidden = !shown.length || document.activeElement !== input;
+    if (list.hidden) return;
+    list.innerHTML = shown.map((m, i) => `<button type="button" data-i="${i}">${esc(m)}</button>`).join('');
+    list.scrollTop = 0;
+    keepVisible();
+  };
+  const vv = window.visualViewport;
+  input.addEventListener('focus', () => {
+    clearTimeout(hideT);
+    draw();
+    vv && vv.addEventListener('resize', keepVisible); // 키보드가 올라오면 목록이 가려지지 않게
+  });
+  input.addEventListener('input', draw);
+  input.addEventListener('blur', () => {
+    vv && vv.removeEventListener('resize', keepVisible);
+    hideT = setTimeout(() => { list.hidden = true; }, 150);
+  });
+  input.addEventListener('keydown', e => { if (e.key === 'Escape' && !list.hidden) { e.stopPropagation(); list.hidden = true; } });
+  // 목록을 눌러도 입력 칸 포커스가 빠지지 않게 (누른 항목이 사라지지 않음)
+  list.addEventListener('mousedown', e => e.preventDefault());
+  list.addEventListener('click', e => {
+    const b = e.target.closest('[data-i]');
+    if (!b) return;
+    input.value = shown[b.dataset.i];
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    list.hidden = true;
+    input.blur();
+  });
+}
+
 function openTxForm(tx, preset = {}) {
   const editing = !!tx;
   const base = S.settings.currency;
@@ -982,15 +1058,15 @@ function openTxForm(tx, preset = {}) {
   // 기본 통화 먼저, 그다음 최근에 쓴 외화, 나머지
   const recent = [...new Set(expTx().sort(sortTx).map(t => t.ocur).filter(k => CUR[k]))];
   const curList = [...new Set([base, ...recent, ...Object.keys(CUR)])];
-  const memos = [...new Set(expTx().sort((a, b) => (b.created || 0) - (a.created || 0)).map(t => t.memo).filter(Boolean))].slice(0, 40);
+  // 예전 메모 (최근 순). 글자를 치면 앞글자로 걸러서 보여 주므로 넉넉히
+  const memos = [...new Set(expTx().sort((a, b) => (b.created || 0) - (a.created || 0)).map(t => (t.memo || '').trim()).filter(Boolean))].slice(0, 300);
   const body = `
     <div class="amount-box" id="f-amt-box"><span class="amount-cur" id="f-pre"></span><input id="f-amt" inputmode="decimal" enterkeyhint="done" placeholder="0" autocomplete="off" aria-label="금액" value="${amountToInput(amt0, curOf(f.cur).dec)}"><span class="amount-cur" id="f-suf"></span>
       <span class="cur-pill"><b id="f-cur-code"></b> ▾<select id="f-cur" aria-label="통화">${curList
         .map(k => `<option value="${k}" ${k === f.cur ? 'selected' : ''}>${k} · ${esc(CUR[k].name)}${k === base ? ' (기본)' : ''}</option>`).join('')}</select></span></div>
     <div class="conv" id="f-conv" hidden></div>
     <div class="f-label">메모</div>
-    <input id="f-memo" class="input" maxlength="60" list="f-memo-list" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off">
-    <datalist id="f-memo-list">${memos.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
+    <div class="sugg-wrap"><input id="f-memo" class="input" maxlength="60" value="${esc(f.memo)}" enterkeyhint="done" autocomplete="off"></div>
     <div class="f-label">상세 <small>(선택)</small></div>
     <div class="chips tags" id="f-tags"></div>
     <textarea id="f-detail" class="input area detail" maxlength="${DETAIL_MAX}" rows="2" autocomplete="off">${esc(f.detail || '')}</textarea>
@@ -1079,6 +1155,7 @@ function openTxForm(tx, preset = {}) {
         $('#f-date', w).value = ymd(d);
       }));
       $('#f-memo', w).addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
+      mountSuggest($('#f-memo', w), memos);
       autoGrow($('#f-detail', w));
       mountTags($('#f-tags', w), $('#f-detail', w));
       if (!editing && !preset.amount) amt.focus({ preventScroll: true });

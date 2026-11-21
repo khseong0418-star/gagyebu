@@ -371,6 +371,20 @@ select.input { appearance: auto; }
 .amount-box.sm input { font-size: 24px; }
 .amount-cur { font-size: 22px; font-weight: 700; color: var(--ink-2); }
 .amount-box.err { border-color: var(--danger); animation: shake 0.3s; }
+/* 메모 칸 아래 예전 메모 목록 */
+.sugg-wrap { position: relative; }
+.sugg {
+  position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 5;
+  max-height: 212px; overflow-y: auto; overscroll-behavior: contain; padding: 4px 0;
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+.sugg[hidden] { display: none; }
+.sugg button {
+  display: block; width: 100%; padding: 10px 14px; text-align: left;
+  font-size: 15px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sugg button + button { border-top: 1px solid var(--line); }
+.sugg button:active { background: var(--card-2); }
 /* 금액 계산기 줄 */
 .calc { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .calc[hidden] { display: none; }
