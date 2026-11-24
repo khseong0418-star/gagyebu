@@ -1,6 +1,6 @@
 'use strict';
 /* 가계부 — 오프라인 PWA. 모든 데이터는 이 기기(localStorage)에만 저장됩니다. */
-const APP_VERSION = '1.4.9';
+const APP_VERSION = '1.5.2';
 /** 이 화면 코드가 필요로 하는 안드로이드 앱 본체 versionCode (바로 업데이트 묶음에 기록, tools/make-ota.js) */
 const MIN_NATIVE = 6;
 const STORE_KEY = 'gagyebu.v1';
@@ -8,6 +8,8 @@ const STORE_KEY = 'gagyebu.v1';
 const NATIVE = window.GagyebuNative || null;
 const NP = window.GagyebuNotif;
 const APK_URL = 'https://khseong0418-star.github.io/gagyebu/gagyebu.apk';
+/** KB Pay(카드 앱)·KB스타뱅킹 패키지 이름 — 같은 결제를 둘 다 알려 주면 KB Pay 것으로 기록 (PREFER) */
+const KB_PAY = 'com.kbcard.cxh.appcard', KB_STAR = 'com.kbstar.kbbank';
 
 /* ================= 유틸 ================= */
 const $ = (s, el = document) => el.querySelector(s);
@@ -341,7 +343,7 @@ function defaultState() {
   return {
     version: 1,
     settings: {
-      currency: 'SGD', theme: 'system', lastBackup: 0, autoNotif: true, tempDelete: true, notifBlock: [],
+      currency: 'SGD', theme: 'system', lastBackup: 0, autoNotif: true, tempDelete: true, notifBlock: [], kbPair: 1,
       rates: {}, ratesBase: '', ratesAt: 0, ratesDate: '', ratesSrc: '', catSeed: CAT_SEED,
     },
     categories: { expense: mk(DEFAULT_CATS.expense), income: mk(DEFAULT_CATS.income) },
@@ -403,7 +405,9 @@ function migrate(d) {
       ratesDate: str(ds.ratesDate, 10),
       ratesSrc: str(ds.ratesSrc, 30),
       catSeed: CAT_SEED,
-      notifBlock: Array.isArray(ds.notifBlock) ? ds.notifBlock.map(p => str(p, 120)).filter(Boolean) : [],
+      // v1.5.1: KB Pay 알림을 우선으로 쓰게 되어, 예전에 막아 둔 KB Pay는 한 번 풀어 줌 (그 뒤 다시 막으면 유지)
+      notifBlock: Array.isArray(ds.notifBlock) ? ds.notifBlock.map(p => str(p, 120)).filter(p => p && (ds.kbPair || p !== KB_PAY)) : [],
+      kbPair: 1,
     },
     inbox: (Array.isArray(d.inbox) ? d.inbox : [])
       .filter(i => i && i.type === 'expense' && /^\d{4}-\d{2}-\d{2}$/.test(i.date))
@@ -417,6 +421,7 @@ function migrate(d) {
         id: str(l.id || uid(), 40), time: num(l.time), app: str(l.app, 40), pkg: str(l.pkg, 120), text: str(l.text, 400),
         status: str(l.status, 10), note: str(l.note, 80), txId: l.txId ? str(l.txId, 40) : undefined,
         memo: l.memo ? str(l.memo, 60) : undefined, autoCat: l.autoCat ? str(l.autoCat, 40) : undefined, tkey: l.tkey ? str(l.tkey, 80) : undefined,
+        pair: l.pair ? str(l.pair, 40) : undefined,
         src: l.src && typeof l.src === 'object' ? { title: str(l.src.title, 200), text: str(l.src.text, 400) } : undefined,
       })),
     categories: { expense: seedCats(cats('expense'), num(ds.catSeed)), income: cats('income') },
@@ -803,12 +808,16 @@ function viewSettings() {
   let notif;
   if (NATIVE) {
     const perm = nativeCall('listenerEnabled', false);
+    // 권한은 있어도 폰이 메모리 부족 등으로 알림 연결을 끊는 경우가 있음 (앱 본체 v1.5 이상에서 확인 가능)
+    const live = perm ? nativeCall('listenerConnected', null) : null;
     notif = `<section><h3 class="sec-title">결제 알림 자동 기록</h3><div class="card list">
       <div class="row"><span class="row-icon">🔔</span><span class="grow">알림으로 자동 기록</span>
         <button class="switch ${S.settings.autoNotif ? 'on' : ''}" data-act="autoNotif" role="switch" aria-checked="${S.settings.autoNotif}" aria-label="알림으로 자동 기록"><i></i></button></div>
       <div class="row"><span class="row-icon">🧹</span><span class="grow">임시 거래 지우기<br><small class="muted">결제 후 1시간 안에 전액 취소되면 둘 다 기록하지 않음</small></span>
         <button class="switch ${S.settings.tempDelete ? 'on' : ''}" data-act="tempDelete" role="switch" aria-checked="${S.settings.tempDelete}" aria-label="임시 거래 지우기"><i></i></button></div>
-      ${perm ? setRow('notifPerm', '✅', '알림 접근 권한', '허용됨') : setRow('notifPerm', '⚠️', '<b>알림 접근 권한 허용하기</b>', '필요')}
+      ${!perm ? setRow('notifPerm', '⚠️', '<b>알림 접근 권한 허용하기</b>', '필요')
+        : live === false ? setRow('notifFix', '⚠️', '<b>알림 연결이 끊겼어요</b>', '다시 연결')
+        : setRow('notifPerm', '✅', '알림 접근 권한', live ? '허용됨 · 연결됨' : '허용됨')}
       ${setRow('inbox', '📥', '확인 필요한 알림', `${S.inbox.length}건`)}
       ${setRow('notifLog', '📜', '인식 기록', `${S.notifLog.length}건`)}
       ${setRow('notifTest', '🧪', '알림 문구 테스트')}
@@ -1230,6 +1239,13 @@ function openTxForm(tx, preset = {}) {
             t.auto = 1;
             S.inbox = S.inbox.filter(i => i.id !== preset.inboxId);
           }
+          // 인식 기록에서 직접 기록: 알림 시각으로 남기고 인식 기록과 연결 (같은 알림이 확인 필요에 있으면 정리)
+          const le = preset.logId && S.notifLog.find(l => l.id === preset.logId);
+          if (le) {
+            Object.assign(t, { auto: 1, created: le.time });
+            Object.assign(le, { status: 'saved', txId: t.id, note: `${catOf(t).name} · ${refund ? `환불 +${money(amount)}` : money(amount)} (직접 기록)`.slice(0, 80) });
+            S.inbox = S.inbox.filter(i => !(i.time === le.time && i.app === le.app));
+          }
           S.tx.push(t);
           requestPersist();
         }
@@ -1631,6 +1647,40 @@ function txTs(t) {
 const payOf = t => ({ currency: t.ocur || S.settings.currency, amount: t.ocur ? t.oamt : t.amount });
 /** 같은 결제인지 보는 열쇠: 환불 여부 | 통화 | 금액 | 가맹점 (임시 거래로 지운 뒤 늦게 온 중복 알림 거르기) */
 const tkeyOf = (refund, currency, amount, merchant) => `${refund ? 1 : 0}|${currency || ''}|${amount}|${NP.normKey(merchant || '')}`;
+
+/**
+ * 같은 결제를 두 앱이 함께 알려 주는 경우 [우선 앱, 다음 앱]: 우선 앱 알림으로 한 번만 기록.
+ * KB Pay(카드 사용 알림, 가맹점 이름이 온전함) > KB스타뱅킹(계좌 출금 알림, 가맹점 이름이 잘림).
+ * 계좌에서만 나가는 출금(자동이체·간편결제 등)은 KB스타뱅킹 알림만 오므로 그대로 기록.
+ */
+const PREFER = [[KB_PAY, KB_STAR]];
+/** 1 = a가 우선, -1 = b가 우선, 0 = 짝이 아님 */
+const pairRank = (a, b) => {
+  for (const [p, s] of PREFER) {
+    if (a === p && b === s) return 1;
+    if (a === s && b === p) return -1;
+  }
+  return 0;
+};
+/** 두 앱의 알림은 보통 같은 초에 옴 */
+const PAIR_MS = 5 * 60 * 1000;
+/**
+ * 두 알림의 열쇠(tkey)가 같은 결제를 가리키는지: 환불 여부·통화·금액이 같으면 같은 결제.
+ * 가맹점 이름은 앱마다 다르게 적혀서(카카오_택 / 카카오T택시) 보지 않음. 알림 하나는 한 번만 짝지으므로
+ * 같은 금액을 여러 번 결제해도 건수는 맞음.
+ */
+function sameTkey(a, b) {
+  const [r1, c1, m1] = String(a || '').split('|'), [r2, c2, m2] = String(b || '').split('|');
+  return r1 === r2 && c1 === c2 && Math.abs(Number(m1) - Number(m2)) < 0.005;
+}
+/** 짝 앱에서 온, 아직 짝지어지지 않은 같은 결제 알림 (시간이 가장 가까운 것) */
+function findPairLog(pkg, tkey, time, selfId) {
+  if (!pkg || !PREFER.some(p => p.includes(pkg))) return null;
+  return S.notifLog
+    .filter(l => l.id !== selfId && !l.pair && pairRank(pkg, l.pkg) !== 0 && (l.status === 'saved' || l.status === 'temp')
+      && Math.abs(l.time - time) < PAIR_MS && sameTkey(l.tkey, tkey))
+    .sort((x, y) => Math.abs(x.time - time) - Math.abs(y.time - time))[0] || null;
+}
 /**
  * 취소 알림의 원래 결제: 3일 안의 같은 금액 지출 중 가장 최근 것 (이미 취소된 건 제외).
  * shopKey가 있으면 가맹점도 같아야 함 (KB '출금취소'처럼 가맹점 없이 오면 금액만 봄).
@@ -1652,7 +1702,7 @@ function findOriginalPay(hit, time, skipId, shopKey = '') {
 const isTempPair = (orig, cancelTime) => S.settings.tempDelete && !!orig && !!orig.auto && cancelTime - txTs(orig) <= TEMP_WINDOW;
 
 /** 알림 하나를 어떻게 처리할지 결정합니다 (데이터는 바꾸지 않음). */
-function analyzeNotif(n, { skipId } = {}) {
+function analyzeNotif(n, { skipId, logId, paired } = {}) {
   const time = Number(n.time) || Date.now();
   const app = String(n.app || n.pkg || '알림').slice(0, 40);
   if (!S.settings.autoNotif) return { status: 'off', note: '자동 기록이 꺼져 있음' };
@@ -1684,9 +1734,34 @@ function analyzeNotif(n, { skipId } = {}) {
   const key = NP.normKey(memo);
   const tkey = tkeyOf(refund, hit.currency || base, hit.amount, p.merchant);
   const near = t0 => Math.abs(t0 - time) < 10 * 60 * 1000;
-  // 결제 직후 취소가 오는 경우가 있으므로 환불 여부까지 같아야 중복으로 봄
+  // 같은 결제를 두 앱이 함께 알려 주면(KB Pay + KB스타뱅킹) 우선 앱 것으로 한 번만 기록
+  const mate = paired ? null : findPairLog(n.pkg, tkey, time, logId);
+  let replace = null;
+  if (mate) {
+    const mateTx = mate.status === 'saved' && mate.txId && S.tx.find(t => t.id === mate.txId);
+    // 짝이 우선 앱이거나, 짝 기록을 임시 거래로 지웠거나 사용자가 지웠으면 이 알림은 기록하지 않음
+    if (pairRank(n.pkg, mate.pkg) < 0 || !mateTx)
+      return { status: 'dup', note: `${mate.app} 알림과 같은 결제 (${mate.status === 'temp' ? '임시 거래로 지움' : '한 번만 기록'})`.slice(0, 80), pairId: mate.id };
+    // 이 알림이 우선 앱이면 먼저 적힌 짝 기록을 이 알림 내용으로 바꿈
+    replace = { txId: mateTx.id, logId: mate.id };
+  }
+  const srcApp = t => (S.notifLog.find(e => e.txId === t.id) || {}).pkg;
+  // 결제 직후 취소가 오는 경우가 있으므로 환불 여부까지 같아야 중복으로 봄 (짝 앱끼리는 위에서 따로 처리)
+  const twins = S.tx.filter(t => t.id !== skipId && t.auto && t.type === 'expense' && !!t.refund === !!refund && amount !== null && Math.abs(t.amount - amount) < 0.005 && NP.normKey(t.memo) === key && near(t.created || 0)
+    && !(replace && t.id === replace.txId) && !(n.pkg && pairRank(n.pkg, srcApp(t)) !== 0));
+  // 같은 앱에서 내용(잔액·시각 등)이 다른 알림이 또 왔으면 따로 한 결제 (한 가게에서 나눠 결제 등).
+  // 다른 앱(문자·카드 앱)에서 온 같은 결제나, 같은 앱의 똑같은 알림이 다시 온 것만 중복으로 봄
+  const text0 = [n.title, n.text].filter(Boolean).join(' · ').slice(0, 400);
+  const balOf = s => (String(s).match(/잔액\s*:?\s*([\d,]+)/) || [])[1] || '';
+  const separate = t => {
+    const l = S.notifLog.find(e => e.txId === t.id);
+    if (!l || !n.pkg || l.pkg !== n.pkg) return false;
+    const b0 = balOf(text0), b1 = balOf(l.text);
+    return b0 && b1 ? b0 !== b1 : l.text !== text0; // 잔액이 있으면 잔액으로 판단
+  };
+  const splitPay = twins.some(separate);
   const dup =
-    S.tx.some(t => t.id !== skipId && t.auto && t.type === 'expense' && !!t.refund === !!refund && amount !== null && Math.abs(t.amount - amount) < 0.005 && NP.normKey(t.memo) === key && near(t.created || 0)) ||
+    twins.some(t => !separate(t)) ||
     S.inbox.some(i => !!i.refund === !!refund && i.amountOrig === hit.amount && NP.normKey(i.memo) === key && near(i.time)) ||
     // 임시 거래로 지운 결제·취소의 중복 알림 (몇 분 안에 오는 문자·앱 알림 중복만; 같은 금액의 실제 요금은 보통 더 늦게 옴)
     S.notifLog.some(l => l.status === 'temp' && l.tkey === tkey && Math.abs(l.time - time) < 3 * 60 * 1000);
@@ -1695,8 +1770,8 @@ function analyzeNotif(n, { skipId } = {}) {
   if (isTempPair(origPay, time)) return { status: 'temp', note: `결제 직후 전액 취소된 임시 거래 (${origPay.memo} 결제 기록을 지움)`.slice(0, 80), origId: origPay.id, memo, tkey, hit, time };
   // 가맹점을 못 찾아 앱 이름으로 적은 기록끼리는 카테고리를 따라가지 않음 (은행 앱 알림이 모두 한 카테고리로 몰리지 않게)
   const cat = orig0 && S.categories.expense.some(c => c.id === orig0.cat) ? orig0.cat
-    : NP.guessCategory(memo, 'expense', p.merchant ? expTx().filter(t => t.id !== skipId).sort(sortTx) : [], S.categories.expense, `${n.title || ''} ${n.text || ''}`);
-  const info = { type: 'expense', refund, memo, merchantFound: !!p.merchant, date: ymd(new Date(time)), cat, time, app, hit, amount, orig, tkey, method: guessMethod(app) };
+    : NP.guessCategory(memo, 'expense', p.merchant ? expTx().filter(t => t.id !== skipId && !(replace && t.id === replace.txId)).sort(sortTx) : [], S.categories.expense, `${n.title || ''} ${n.text || ''}`);
+  const info = { type: 'expense', refund, memo, merchantFound: !!p.merchant, date: ymd(new Date(time)), cat, time, app, hit, amount, orig, tkey, splitPay, replace, method: guessMethod(app) };
   if (amount === null) return { status: 'review', note: hit.currency ? `${hit.currency} 환율이 없어 확인 필요` : '통화를 알 수 없어 확인 필요', ...info };
   return { status: 'saved', note: '', ...info };
 }
@@ -1735,6 +1810,29 @@ function applyNotif(a, entry) {
   Object.assign(entry, { status: a.status, note: a.note });
   delete entry.txId;
   if (a.tkey) entry.tkey = a.tkey;
+  // 짝 앱 알림과 같은 결제로 묶음 (한 알림은 한 번만 짝지음)
+  const mate = a.pairId ? S.notifLog.find(l => l.id === a.pairId) : a.replace ? S.notifLog.find(l => l.id === a.replace.logId) : null;
+  if (mate) {
+    entry.pair = mate.id;
+    mate.pair = entry.id;
+  }
+  if (a.status === 'saved' && a.replace) {
+    // 먼저 적힌 짝 기록(KB스타뱅킹)을 우선 앱(KB Pay) 내용으로 바꿈. 사용자가 고친 메모·카테고리는 그대로 둠
+    const tx = S.tx.find(t => t.id === a.replace.txId);
+    if (tx) {
+      if (!mate || tx.memo === (mate.memo || mate.app)) tx.memo = a.memo;
+      if (!mate || !mate.autoCat || tx.cat === mate.autoCat) tx.cat = a.cat;
+      entry.txId = tx.id;
+      entry.memo = a.memo;
+      entry.autoCat = a.cat;
+      entry.note = `${catOf(tx).name} · ${tx.refund ? `환불 +${money(tx.amount)}` : money(tx.amount)}`;
+    }
+    if (mate) {
+      Object.assign(mate, { status: 'dup', note: `${entry.app} 알림으로 대신 기록`.slice(0, 80) });
+      delete mate.txId;
+    }
+    return;
+  }
   if (a.status === 'saved') {
     const tx = { id: uid(), type: a.type, amount: a.amount, cat: a.cat, date: a.date, time: hmOf(a.time), memo: a.memo, method: a.method, created: a.time, auto: 1 };
     if (a.orig && CUR[a.orig.ocur]) Object.assign(tx, a.orig);
@@ -1770,11 +1868,17 @@ function reprocessLog() {
   for (const e of [...S.notifLog].reverse()) {
     const n = { ...logSource(e), app: e.app, pkg: e.pkg, time: e.time };
     if (e.status === 'ignored') {
-      const a = analyzeNotif(n);
+      const a = analyzeNotif(n, { logId: e.id, paired: !!e.pair });
       if (!['saved', 'review', 'temp'].includes(a.status)) continue;
       applyNotif(a, e);
       if (a.status === 'temp') cleaned++;
       else added++;
+    } else if (e.status === 'dup' && !e.pair) {
+      // 예전 규칙에서 중복으로 본 같은 앱의 연이은 결제 → 따로 기록 (원래 결제를 지워서 안 보이게 된 경우는 그대로 둠)
+      const a = analyzeNotif(n, { logId: e.id });
+      if (a.status !== 'saved' || !a.splitPay) continue;
+      applyNotif(a, e);
+      added++;
     } else if (e.status === 'saved') {
       const tx = e.txId && S.tx.find(t => t.id === e.txId);
       if (!tx || !tx.auto) continue;
@@ -1787,7 +1891,7 @@ function reprocessLog() {
           continue;
         }
       }
-      const a = analyzeNotif(n, { skipId: tx.id });
+      const a = analyzeNotif(n, { skipId: tx.id, logId: e.id, paired: !!e.pair });
       if (a.status !== 'saved' || !!a.refund !== !!tx.refund) continue;
       // 앱이 자동으로 적은 값 (예전 기록은 메모 = 앱 이름, 카테고리 = 인식 기록 문구 앞부분)
       const autoMemo = e.memo || e.app;
@@ -1877,6 +1981,30 @@ function openInbox() {
   });
 }
 
+/** 인식 기록의 알림 하나로 내역 입력창을 미리 채움 (기록되지 않은 알림을 직접 기록할 때) */
+function notifDraft(l) {
+  const n = { ...logSource(l), app: l.app, pkg: l.pkg, time: l.time };
+  const base = S.settings.currency;
+  const p = NP.parse(n);
+  const text = `${n.title || ''} ${n.text || ''}`.trim();
+  // 결제로 보지 않은 알림도 금액은 찾아서 채움
+  const raw = p.ok ? p.amounts : NP.findAmounts(text);
+  const amounts = (raw || []).map(a => ({ ...a, currency: a.currency || (DOLLAR_BASES.includes(base) && String(a.raw || '').includes('$') ? base : null) }));
+  const hit = amounts.find(a => a.currency === base) || amounts.find(a => CUR[a.currency]) || null;
+  const memo = (p.ok ? p.merchant : NP.findMerchant(text, '')) || '';
+  return {
+    memo: memo.slice(0, 60),
+    cat: memo ? NP.guessCategory(memo, 'expense', expTx().sort(sortTx), S.categories.expense, text) : null,
+    date: ymd(new Date(l.time)),
+    time: hmOf(l.time),
+    cur: hit ? hit.currency : base,
+    amount: hit ? hit.amount : 0, // 통화를 모르면 비워 두고 직접 입력
+    refund: !!(p.ok && p.refund),
+    logId: l.id,
+    note: `🔔 ${esc(l.app)} 알림 (${fmtTime(l.time)})<br><small>${esc(text.slice(0, 160))}</small>`,
+  };
+}
+
 function openNotifLog() {
   openSheet({
     title: '알림 인식 기록',
@@ -1896,6 +2024,7 @@ function openNotifLog() {
               ${l.pkg ? `<button class="chip sm" data-x="block" data-pkg="${esc(l.pkg)}">${blocked ? '무시 해제' : '이 앱 무시'}</button>` : ''}</div>
             <div class="log-text">${esc(l.text)}</div>
             ${l.note ? `<div class="log-note">${linked ? `<button class="link-btn" data-act="edit" data-id="${esc(l.txId)}">${esc(l.note)} ›</button>` : esc(l.note)}</div>` : ''}
+            ${linked ? '' : `<button class="chip sm log-rec" data-x="rec" data-id="${esc(l.id)}">＋ 내역으로 기록</button>`}
           </div>`;
         }).join('') +
         '<button class="btn block" data-x="clear">인식 기록 지우기</button>';
@@ -1904,7 +2033,10 @@ function openNotifLog() {
       $('.sheet-body', w).addEventListener('click', e => {
         const b = e.target.closest('[data-x]');
         if (!b) return;
-        if (b.dataset.x === 'block') {
+        if (b.dataset.x === 'rec') {
+          const l = S.notifLog.find(x => x.id === b.dataset.id);
+          if (l) openTxForm(null, notifDraft(l));
+        } else if (b.dataset.x === 'block') {
           const arr = S.settings.notifBlock, i = arr.indexOf(b.dataset.pkg);
           if (i >= 0) arr.splice(i, 1); else arr.push(b.dataset.pkg);
           commit();
@@ -2360,6 +2492,11 @@ const ACT = {
   inbox: openInbox,
   notifLog: openNotifLog,
   notifPerm: openNotifPerm,
+  notifFix: () => {
+    nativeCall('reconnectListener', null);
+    toast('알림 연결을 다시 하는 중이에요 (10초쯤 걸려요)');
+    setTimeout(render, 12000);
+  },
   notifTest: openNotifTest,
   rates: openRates,
   tempDelete: () => {

@@ -35,6 +35,18 @@ public class NativeBridge {
         return false;
     }
 
+    /** 알림 연결이 실제로 살아 있는지 (권한이 있어도 폰이 연결을 끊을 수 있음) */
+    @JavascriptInterface
+    public boolean listenerConnected() {
+        return PayNotificationListener.connected;
+    }
+
+    /** 알림 연결을 다시 붙임 (설정의 '알림 연결이 끊겼어요'를 눌렀을 때) */
+    @JavascriptInterface
+    public void reconnectListener() {
+        act.runOnUiThread(() -> ListenerWatch.ensure(act, true));
+    }
+
     @JavascriptInterface
     public void openListenerSettings() {
         act.runOnUiThread(() -> {

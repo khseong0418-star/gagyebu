@@ -3,6 +3,8 @@
 
     <!-- 환율 자동 업데이트 (기준 통화 코드만 보냄) -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 알림 연결 지킴이(15분마다)가 폰을 다시 켠 뒤에도 계속 돌도록 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- 알림을 보낸 은행·카드 앱의 이름을 표시하기 위해 실행 가능한 앱 목록 조회 -->
     <queries>
@@ -43,5 +45,17 @@
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
+
+        <!-- 알림 연결이 끊겼는지 15분마다 확인하고 다시 연결 -->
+        <service
+            android:name=".ListenerWatch"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <!-- 빈 부품: 켜고/꺼서 시스템이 알림 연결을 다시 맺게 하는 신호용 -->
+        <receiver
+            android:name=".RebindKick"
+            android:enabled="false"
+            android:exported="false" />
     </application>
 </manifest>

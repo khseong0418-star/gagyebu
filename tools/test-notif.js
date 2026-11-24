@@ -81,6 +81,13 @@ const cases = [
     want: { type: 'expense', amount: 45, currency: 'SGD', merchant: 'NAILS GLAMOUR ORCHARD', cat: 'beauty' } },
   { app: 'YouTrip', title: 'YouTrip', text: 'You spent SGD 8.50 at BROWNIE POINTS BAKERY',
     want: { type: 'expense', amount: 8.5, currency: 'SGD', merchant: 'BROWNIE POINTS BAKERY', cat: 'cafe' } },
+  // ---- KB Pay 카드 사용 알림 (가맹점 이름이 온전함 → KB스타뱅킹 출금 알림보다 우선) ----
+  { app: 'KB Pay', title: 'KB Pay', text: 'KB국민체크(1234) 홍*동님 11/24 18:42 11,586원 행복온누리약국 사용',
+    want: { type: 'expense', amount: 11586, currency: 'KRW', merchant: '행복온누리약국', cat: 'health' } },
+  { app: 'KB Pay', title: 'KB Pay', text: 'KB국민체크(1234) 홍*동님 11/24 18:35 30,480원 송도스포츠 정형외과 사용',
+    want: { type: 'expense', amount: 30480, currency: 'KRW', merchant: '송도스포츠 정형외과', cat: 'health' } },
+  { app: 'KB Pay', title: 'KB Pay', text: 'KB국민체크(1234) 홍*동님 11/19 15:08 6,400원 카카오T택시 취소',
+    want: { type: 'income', refund: true, amount: 6400, currency: 'KRW', merchant: '카카오T택시', cat: 'transport' } },
   // 출금취소 = 결제 취소 (가맹점 이름 없이 옴 → 앱에서 같은 금액의 직전 결제를 찾아 맞춤)
   { app: 'KB Star Banking', title: '입금 8,900원', text: '홍*동님 11/18 11:57 123456**789 출금취소 8,900 잔액1,114,067',
     want: { type: 'income', refund: true, amount: 8900, currency: 'KRW', merchant: '' } },

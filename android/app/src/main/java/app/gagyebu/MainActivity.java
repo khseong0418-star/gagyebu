@@ -101,6 +101,7 @@ public class MainActivity extends Activity {
             }
         });
         loadWeb(Ota.resolve(this));
+        ListenerWatch.schedule(this);
     }
 
     /** 화면 코드 버전을 정해 처음부터 다시 엶. 새 버전은 15초 안에 정상 시작을 알려야 계속 씀 */
@@ -200,6 +201,10 @@ public class MainActivity extends Activity {
         super.onResume();
         current = new WeakReference<>(this);
         notifyWeb(); // 권한 설정에서 돌아왔거나, 그사이 쌓인 알림 반영
+        // 알림 연결이 끊겨 있으면 다시 연결 (다시 연결되면 놓친 알림을 가져오고 화면에 알려 줌)
+        ui.postDelayed(() -> {
+            if (!isDestroyed()) ListenerWatch.ensure(this, false);
+        }, ListenerWatch.GRACE_MS);
     }
 
     @Override

@@ -477,6 +477,7 @@ a.row:active { background: var(--press); }
 }
 .log-note { margin-top: 4px; font-size: 13px; font-weight: 700; }
 .log-note .link-btn { margin: 0; padding: 0; font-size: 13px; text-align: left; }
+.chip.log-rec { margin-top: 8px; color: var(--accent-ink); }
 .steps { margin: 10px 0; padding-left: 22px; font-size: 14.5px; line-height: 1.6; }
 .steps li + li { margin-top: 8px; }
 textarea.input.area { height: auto; min-height: 120px; padding: 12px 14px; resize: vertical; font-size: 15px; line-height: 1.5; }
